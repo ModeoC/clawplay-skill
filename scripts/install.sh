@@ -2,9 +2,9 @@
 set -e
 
 REPO="https://github.com/ModeoC/clawplay-skill"
-SKILL_NAME="agent-poker"
+SKILL_NAME="clawplay"
 SKILL_DIR="$HOME/.openclaw/workspace/skills/$SKILL_NAME"
-SKILL_FILES="SKILL.md poker-listener.js poker-cli.js debug-poker.sh"
+OLD_SKILL_DIR="$HOME/.openclaw/workspace/skills/agent-poker"
 
 # ANSI colors
 BOLD=$'\033[1m'
@@ -29,7 +29,7 @@ if [ ! -d "$HOME/.openclaw" ]; then
 fi
 
 if ! command -v node &>/dev/null; then
-  error "Node.js not found. The poker skill requires Node.js 22+."
+  error "Node.js not found. ClawPlay requires Node.js 22+."
   exit 1
 fi
 
@@ -38,9 +38,14 @@ if [ "$NODE_MAJOR" -lt 22 ] 2>/dev/null; then
   warn "Node.js $(node -v) detected. Node.js 22+ is recommended."
 fi
 
+if ! command -v jq &>/dev/null; then
+  warn "jq not found. The poker skill uses jq for credential setup."
+  info "Install: ${CYAN}https://jqlang.github.io/jq/download/${NC}"
+fi
+
 # --- Install ---
 
-printf "\n${BOLD}ClawPlay Poker Skill${NC}\n\n"
+printf "\n${BOLD}ClawPlay${NC}\n\n"
 
 info "Downloading from ${CYAN}$REPO${NC}..."
 temp_dir=$(mktemp -d)
@@ -49,15 +54,29 @@ git clone --depth 1 --quiet "$REPO" "$temp_dir"
 
 mkdir -p "$SKILL_DIR"
 
-for file in $SKILL_FILES; do
-  if [ ! -f "$temp_dir/$file" ]; then
-    error "Missing file: $file"
-    exit 1
-  fi
-  cp "$temp_dir/$file" "$SKILL_DIR/$file"
-done
+# Copy parent SKILL.md
+if [ ! -f "$temp_dir/SKILL.md" ]; then
+  error "Missing file: SKILL.md"
+  exit 1
+fi
+cp "$temp_dir/SKILL.md" "$SKILL_DIR/SKILL.md"
+
+# Copy game sub-skill(s)
+if [ ! -d "$temp_dir/clawplay-poker" ]; then
+  error "Missing directory: clawplay-poker/"
+  exit 1
+fi
+cp -a "$temp_dir/clawplay-poker" "$SKILL_DIR/"
 
 completed "Installed to ${CYAN}$SKILL_DIR${NC}"
+
+# --- Migration: remove old flat layout ---
+
+if [ -d "$OLD_SKILL_DIR" ]; then
+  warn "Removing old install at ${CYAN}$OLD_SKILL_DIR${NC}..."
+  rm -rf "$OLD_SKILL_DIR"
+  completed "Old install removed"
+fi
 
 # --- Credential check ---
 
@@ -69,10 +88,11 @@ if [ -f "$OPENCLAW_JSON" ]; then
   else
     warn "No poker credentials found. Add these to ${CYAN}$OPENCLAW_JSON${NC} env.vars:"
     printf "    POKER_API_KEY     — your agent's API key\n"
-    printf "    POKER_BACKEND_URL — backend URL (default: https://agent-poker-production.up.railway.app)\n"
-    printf "    POKER_GAME_MODE   — game mode ID (ask admin)\n"
+    printf "    POKER_BACKEND_URL — backend URL (default: https://api.clawplay.fun)\n"
+    printf "    POKER_USER_ID     — your user ID\n"
+    printf "    POKER_USERNAME    — your poker username\n"
     printf "\n"
-    info "Sign up: ${CYAN}POST /api/auth/signup${NC} with ${CYAN}{ \"username\": \"your-agent-name\" }${NC}"
+    info "Or tell your agent ${BOLD}\"let's play poker\"${NC} — it will sign up automatically."
   fi
 fi
 
