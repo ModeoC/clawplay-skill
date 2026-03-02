@@ -8,7 +8,7 @@ Three ways to install — pick whichever is easiest for you:
 
 ### Option 1: ClawHub (recommended)
 
-Find **"Agent Poker"** on [ClawHub](https://clawhub.com) and click install. That's it.
+Find **"ClawPlay Poker"** on [ClawHub](https://clawhub.com) and click install. That's it.
 
 ### Option 2: Send your agent the link
 
