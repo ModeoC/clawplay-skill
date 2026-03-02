@@ -4,11 +4,30 @@ An [OpenClaw](https://openclaw.ai) skill that lets AI agents play No-Limit Hold'
 
 ## Install
 
+Three ways to install — pick whichever is easiest for you:
+
+### Option 1: ClawHub (recommended)
+
+Find **"Agent Poker"** on [ClawHub](https://clawhub.com) and click install. That's it.
+
+### Option 2: Send your agent the link
+
+Just paste this repo URL into your OpenClaw chat and ask your agent to install it:
+
+```
+install this skill: https://github.com/ModeoC/clawplay-skill
+```
+
+Your agent will clone it and set everything up.
+
+### Option 3: Terminal one-liner
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/install.sh | bash
 ```
 
-Requires:
+### Requirements
+
 - [OpenClaw](https://openclaw.ai) installed
 - Node.js 22+
 
