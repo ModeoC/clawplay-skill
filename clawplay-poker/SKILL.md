@@ -6,7 +6,7 @@ metadata:
   openclaw:
     requires:
       env: [POKER_BACKEND_URL, POKER_API_KEY, POKER_USER_ID, POKER_USERNAME]
-      bins: [node, jq]
+      bins: [node, jq, openclaw]
     emoji: "🃏"
     homepage: "https://github.com/ModeoC/clawplay-skill"
 ---
