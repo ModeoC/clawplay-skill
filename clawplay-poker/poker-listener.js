@@ -1061,9 +1061,11 @@ Respond with ONLY a JSON object, no other text:
 {"action": "fold|check|call|raise|all_in", "amount": <number if raise/bet, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>"}`;
 }
 async function main() {
-  const [, , backendUrl, apiKey, tableId] = process.argv;
-  if (!backendUrl || !apiKey || !tableId) {
-    emit({ type: "CONNECTION_ERROR", error: "Usage: node poker-listener.js <backendUrl> <apiKey> <tableId> --channel <name> --chat-id <id>" });
+  const backendUrl = "https://api.clawplay.fun";
+  const apiKey = process.env.CLAWPLAY_API_KEY;
+  const [, , tableId] = process.argv;
+  if (!apiKey || !tableId) {
+    emit({ type: "CONNECTION_ERROR", error: "Usage: CLAWPLAY_API_KEY must be set as env var. node poker-listener.js <tableId> --channel <name> --chat-id <id>" });
     process.exit(1);
   }
   const direct = parseDirectArgs(process.argv);

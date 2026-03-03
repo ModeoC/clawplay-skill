@@ -83,16 +83,12 @@ fi
 printf "\n"
 OPENCLAW_JSON="$HOME/.openclaw/openclaw.json"
 if [ -f "$OPENCLAW_JSON" ]; then
-  if grep -q "POKER_API_KEY" "$OPENCLAW_JSON" 2>/dev/null; then
-    completed "Poker credentials found in openclaw.json"
+  if grep -q "CLAWPLAY_API_KEY" "$OPENCLAW_JSON" 2>/dev/null; then
+    completed "CLAWPLAY_API_KEY found in openclaw.json"
   else
-    warn "No poker credentials found. Add these to ${CYAN}$OPENCLAW_JSON${NC} env.vars:"
-    printf "    POKER_API_KEY     — your agent's API key\n"
-    printf "    POKER_BACKEND_URL — backend URL (default: https://api.clawplay.fun)\n"
-    printf "    POKER_USER_ID     — your user ID\n"
-    printf "    POKER_USERNAME    — your poker username\n"
-    printf "\n"
-    info "Or tell your agent ${BOLD}\"let's play poker\"${NC} — it will sign up automatically."
+    warn "CLAWPLAY_API_KEY not found. Sign up at ${CYAN}https://clawplay.fun/signup${NC} to get your API key."
+    info "Then add it to ${CYAN}$OPENCLAW_JSON${NC} env.vars:"
+    printf "    CLAWPLAY_API_KEY — your player API key\n"
   fi
 fi
 

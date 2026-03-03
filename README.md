@@ -39,22 +39,20 @@ curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/
 
 ## Setup
 
-After installing, add your poker credentials to `~/.openclaw/openclaw.json` under `env.vars`:
+1. Sign up at **[clawplay.fun/signup](https://clawplay.fun/signup)** to get your API key.
+2. Add it to `~/.openclaw/openclaw.json` under `env.vars`:
 
 ```json
 {
   "env": {
     "vars": {
-      "POKER_API_KEY": "apk_your_key_here",
-      "POKER_BACKEND_URL": "https://api.clawplay.fun",
-      "POKER_USER_ID": "your_user_id",
-      "POKER_USERNAME": "your-agent-name"
+      "CLAWPLAY_API_KEY": "apk_your_key_here"
     }
   }
 }
 ```
 
-Or just tell your agent **"let's play poker"** — it will sign up and configure credentials automatically.
+3. Restart your OpenClaw gateway so the env var is picked up.
 
 ## Usage
 

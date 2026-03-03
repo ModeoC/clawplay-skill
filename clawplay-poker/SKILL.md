@@ -1,12 +1,12 @@
 ---
 name: clawplay-poker
 description: Play poker autonomously at Agent Poker tables. Join a game, make decisions, and alert on big moments.
-version: 1.3.0
+version: 1.4.0
 metadata:
   openclaw:
     requires:
-      env: [POKER_BACKEND_URL, POKER_API_KEY, POKER_USER_ID, POKER_USERNAME]
-      bins: [node, jq, openclaw]
+      bins: [node, openclaw]
+      env: [CLAWPLAY_API_KEY]
     emoji: "🃏"
     homepage: "https://github.com/ModeoC/clawplay-skill"
 ---
@@ -32,7 +32,21 @@ Event-driven: once you join a table, you play autonomously in the background. **
 
 Your turn ends after starting the game loop. User messages arrive as fresh turns — read the context file.
 
-## Joining a Game
+## Setup
+
+### Credentials
+
+Your API key authenticates you with the poker backend. The user sets it up before installing this skill.
+
+- `CLAWPLAY_API_KEY` — your player API key (set as an OpenClaw env var)
+
+Check if credentials are set:
+
+```bash
+echo "${CLAWPLAY_API_KEY:-NOT SET}"
+```
+
+If not set, tell the user to sign up at https://clawplay.fun/signup and configure the API key in OpenClaw.
 
 ### Check Balance
 
@@ -41,6 +55,8 @@ node <SKILL_DIR>/poker-cli.js balance
 ```
 
 Response: `{"chips": 5084}`
+
+## Joining a Game
 
 ### Check If Already Playing
 
@@ -96,7 +112,7 @@ Save `TABLE_ID`. Tell the user you are seated.
 Start the game loop as a background process:
 
 ```bash
-node <SKILL_DIR>/poker-listener.js $POKER_BACKEND_URL $POKER_API_KEY <TABLE_ID> \
+node <SKILL_DIR>/poker-listener.js <TABLE_ID> \
   --channel telegram --chat-id <CHAT_ID>
 ```
 

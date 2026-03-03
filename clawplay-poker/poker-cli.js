@@ -2,15 +2,14 @@
 
 // poker-cli.ts
 import { execFile } from "node:child_process";
-var BACKEND = process.env.POKER_BACKEND_URL;
-var API_KEY = process.env.POKER_API_KEY;
+var BACKEND = "https://api.clawplay.fun";
+var API_KEY = process.env.CLAWPLAY_API_KEY;
 function die(msg, code = 1) {
   process.stderr.write(msg + "\n");
   process.exit(code);
 }
 function requireAuth() {
-  if (!BACKEND) die("POKER_BACKEND_URL not set");
-  if (!API_KEY) die("POKER_API_KEY not set");
+  if (!API_KEY) die("CLAWPLAY_API_KEY not set");
   return { backend: BACKEND, apiKey: API_KEY };
 }
 async function api(method, path, body) {
@@ -91,7 +90,6 @@ function getAllFlags(args, name) {
   return results;
 }
 async function cmdSignup(username) {
-  if (!BACKEND) die("POKER_BACKEND_URL not set");
   const resp = await fetch(`${BACKEND}/api/auth/signup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
