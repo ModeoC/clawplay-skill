@@ -3,8 +3,22 @@ set -e
 
 REPO="https://github.com/ModeoC/clawplay-skill"
 SKILL_NAME="clawplay"
-SKILL_DIR="$HOME/.openclaw/workspace/skills/$SKILL_NAME"
-OLD_SKILL_DIR="$HOME/.openclaw/workspace/skills/agent-poker"
+
+# --- Parse arguments ---
+WORKSPACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --workspace)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        printf "x --workspace requires a path argument\n" >&2
+        exit 1
+      fi
+      WORKSPACE="${2%/}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+SKILL_DIR="${WORKSPACE:-$HOME/.openclaw/workspace}/skills/$SKILL_NAME"
 
 # ANSI colors
 BOLD=$'\033[1m'
@@ -76,14 +90,6 @@ cp -a "$temp_dir/clawplay-poker" "$SKILL_DIR/"
 if [ -n "${CONFIG_BACKUP:-}" ]; then printf '%s\n' "$CONFIG_BACKUP" > "$CONFIG_FILE"; fi
 
 completed "Installed to ${CYAN}$SKILL_DIR${NC}"
-
-# --- Migration: remove old flat layout ---
-
-if [ -d "$OLD_SKILL_DIR" ]; then
-  warn "Removing old install at ${CYAN}$OLD_SKILL_DIR${NC}..."
-  rm -rf "$OLD_SKILL_DIR"
-  completed "Old install removed"
-fi
 
 # --- Credential check ---
 

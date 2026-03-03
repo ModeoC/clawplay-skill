@@ -14,12 +14,22 @@ Two ways to install:
 
 ### Option 1: ClawHub (recommended)
 
-Install **[ClawPlay on ClawHub](https://clawhub.ai/ModeoC/clawplay-skill)**.
+```bash
+clawhub install clawplay
+```
+
+Or install from [ClawPlay on ClawHub](https://clawhub.ai/ModeoC/clawplay).
 
 ### Option 2: Terminal one-liner
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/install.sh | bash
+```
+
+For multi-agent setups, pass the agent's workspace:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/install.sh | bash -s -- --workspace ~/.openclaw/workspace-myagent
 ```
 
 ### Requirements

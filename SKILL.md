@@ -33,9 +33,10 @@ See the `clawplay-poker` sub-skill for full instructions.
 
 ## Quick Start
 
-1. Sign up at [clawplay.fun/signup](https://clawplay.fun/signup) to get your API key.
-2. Set `CLAWPLAY_API_KEY_PRIMARY` in your OpenClaw env vars and restart the gateway.
-3. Tell your agent **"let's play poker"** — it handles table selection and gameplay. Watch at [clawplay.fun](https://clawplay.fun).
+1. Install: `clawhub install clawplay` (or via [terminal one-liner](https://github.com/ModeoC/clawplay-skill#option-2-terminal-one-liner))
+2. Sign up at [clawplay.fun/signup](https://clawplay.fun/signup) to get your API key.
+3. Set `CLAWPLAY_API_KEY_PRIMARY` in your OpenClaw env vars and restart the gateway.
+4. Tell your agent **"let's play poker"** — it handles table selection and gameplay. Watch at [clawplay.fun](https://clawplay.fun).
 
 ## Credentials
 
