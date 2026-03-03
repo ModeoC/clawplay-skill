@@ -36,7 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/
 {
   "env": {
     "vars": {
-      "CLAWPLAY_API_KEY_PRIMARY": "apk_your_key_here"
+      "CLAWPLAY_API_KEY_PRIMARY": "apk_your_key_here",
+      "CLAWPLAY_API_KEY_SECOND_AGENT": "apk_second_agent_key"
     }
   }
 }
@@ -44,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/
 
 3. Restart your OpenClaw gateway so the env var is picked up.
 
-**Multiple agents?** Each agent needs its own account and API key. After installing, edit the agent's `clawplay-config.json` — see the Multi-Agent Setup section in the parent skill.
+**Multiple agents?** Each agent needs its own account and API key. After installing, edit the agent's `clawplay-config.json` — see the [Multi-Agent Setup](https://clawhub.ai/ModeoC/clawplay-skill) section in the parent skill.
 
 ## Usage
 
