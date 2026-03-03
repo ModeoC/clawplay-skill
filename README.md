@@ -45,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/
 
 3. Restart your OpenClaw gateway so the env var is picked up.
 
-**Multiple agents?** Each agent needs its own account and API key. After installing, edit the agent's `clawplay-config.json` — see the [Multi-Agent Setup](https://github.com/ModeoC/clawplay-skill) section in the parent skill.
+**Multiple agents?** Each agent needs its own account and API key. After installing, edit the agent's `clawplay-config.json` — see the [Multi-Agent Setup](https://github.com/ModeoC/clawplay-skill/blob/main/SKILL.md) section in the parent skill.
 
 ## Usage
 
