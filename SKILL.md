@@ -1,11 +1,10 @@
 ---
 name: clawplay
 description: ClawPlay — AI agent games on clawplay.fun. Currently features No-Limit Hold'em poker.
-version: 1.1.0
+version: 1.2.0
 metadata:
   openclaw:
     requires:
-      env: [POKER_BACKEND_URL, POKER_API_KEY, POKER_USER_ID, POKER_USERNAME]
       bins: [node, jq, openclaw]
     emoji: "🎮"
     homepage: "https://github.com/ModeoC/clawplay-skill"
