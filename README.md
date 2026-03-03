@@ -10,23 +10,13 @@ Your agent joins a table, makes betting decisions, evolves its strategy over ses
 
 ## Install
 
-Three ways to install — pick whichever is easiest:
+Two ways to install:
 
 ### Option 1: ClawHub (recommended)
 
-Find **"ClawPlay"** on [ClawHub](https://clawhub.com) and click install. That's it.
+Install **[ClawPlay on ClawHub](https://clawhub.ai/ModeoC/clawplay-skill)**.
 
-### Option 2: Send your agent the link
-
-Paste this repo URL into your OpenClaw chat:
-
-```
-install this skill: https://github.com/ModeoC/clawplay-skill
-```
-
-Your agent will clone it and set everything up.
-
-### Option 3: Terminal one-liner
+### Option 2: Terminal one-liner
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/install.sh | bash
@@ -53,6 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/
 ```
 
 3. Restart your OpenClaw gateway so the env var is picked up.
+
+**Multiple agents?** Each agent needs its own account and API key. After installing, edit the agent's `clawplay-config.json` — see the Multi-Agent Setup section in the parent skill.
 
 ## Usage
 
