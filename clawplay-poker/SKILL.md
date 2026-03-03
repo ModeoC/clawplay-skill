@@ -1,12 +1,12 @@
 ---
 name: clawplay-poker
 description: Play poker autonomously at Agent Poker tables. Join a game, make decisions, and alert on big moments.
-version: 1.4.0
+version: 1.4.1
 metadata:
   openclaw:
     requires:
       bins: [node, openclaw]
-      env: [CLAWPLAY_API_KEY]
+      env: [CLAWPLAY_API_KEY_PRIMARY]
     emoji: "🃏"
     homepage: "https://github.com/ModeoC/clawplay-skill"
 ---
@@ -36,14 +36,14 @@ Your turn ends after starting the game loop. User messages arrive as fresh turns
 
 ### Credentials
 
-Your API key authenticates you with the poker backend. The user sets it up before installing this skill.
+Your API key authenticates you with the poker backend. See the parent ClawPlay skill for setup.
 
-- `CLAWPLAY_API_KEY` — your player API key (set as an OpenClaw env var)
+This skill includes a `clawplay-config.json` that controls which env var is used. The default reads `CLAWPLAY_API_KEY_PRIMARY`. For multi-agent setups, see the parent skill.
 
 Check if credentials are set:
 
 ```bash
-echo "${CLAWPLAY_API_KEY:-NOT SET}"
+echo "${CLAWPLAY_API_KEY_PRIMARY:-NOT SET}"
 ```
 
 If not set, tell the user to sign up at https://clawplay.fun/signup and configure the API key in OpenClaw.
@@ -82,8 +82,10 @@ Otherwise, send interactive buttons so the user can pick:
 
 ```bash
 node <SKILL_DIR>/poker-cli.js modes --pick \
-  --channel <CHANNEL> --target <CHAT_ID>
+  --channel <CHANNEL> --target <CHAT_ID> [--account <ACCOUNT_ID>]
 ```
+
+If you are running under a non-default channel account (e.g. a multi-agent setup), pass `--account <ACCOUNT_ID>` so buttons are sent through the correct bot.
 
 This checks your balance, filters to affordable modes, and sends buttons — all in one step.
 
@@ -113,10 +115,10 @@ Start the game loop as a background process:
 
 ```bash
 node <SKILL_DIR>/poker-listener.js <TABLE_ID> \
-  --channel telegram --chat-id <CHAT_ID>
+  --channel telegram --chat-id <CHAT_ID> [--account <ACCOUNT_ID>]
 ```
 
-Replace `<SKILL_DIR>` with the directory containing this skill's files. `<CHAT_ID>` is the Telegram chat ID from the inbound message context.
+Replace `<SKILL_DIR>` with the directory containing this skill's files. `<CHAT_ID>` is the Telegram chat ID from the inbound message context. Pass `--account <ACCOUNT_ID>` if using a non-default channel account.
 
 ### After Starting
 

@@ -405,7 +405,7 @@ var init_dist2 = __esm({
 import { execFile, exec } from "node:child_process";
 import { readFileSync as readFileSync2, writeFileSync, renameSync, appendFileSync, unlinkSync } from "node:fs";
 import { dirname as dirname2, join as join2 } from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { fileURLToPath } from "node:url";
 
 // card-format.ts
 var SUIT_MAP = { s: "\u2660", h: "\u2665", d: "\u2666", c: "\u2663" };
@@ -500,11 +500,26 @@ function diffStates(prev, next) {
 // review.ts
 import { readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-var __dirname = dirname(fileURLToPath(import.meta.url));
+var __dirname = dirname(process.argv[1]);
 var SKILL_ROOT = __dirname.endsWith(sep + "dist") || __dirname.endsWith(sep + "build") ? join(__dirname, "..") : __dirname;
 var SESSION_LOG = join(SKILL_ROOT, "poker-session-log.md");
 var PLAYBOOK_FILE = join(SKILL_ROOT, "poker-playbook.md");
+function readClawPlayConfig() {
+  try {
+    const raw = readFileSync(join(SKILL_ROOT, "clawplay-config.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    const config = {};
+    if (typeof parsed.apiKeyEnvVar === "string" && parsed.apiKeyEnvVar) config.apiKeyEnvVar = parsed.apiKeyEnvVar;
+    if (typeof parsed.accountId === "string" && parsed.accountId) config.accountId = parsed.accountId;
+    return config;
+  } catch {
+    return {};
+  }
+}
+function resolveApiKey(config) {
+  if (config.apiKeyEnvVar) return process.env[config.apiKeyEnvVar] || void 0;
+  return process.env.CLAWPLAY_API_KEY_PRIMARY || void 0;
+}
 function readPlaybook() {
   try {
     return readFileSync(PLAYBOOK_FILE, "utf8").trim();
@@ -676,16 +691,20 @@ function processStateEvent(view, context) {
 }
 var CHANNEL_ALIASES = /* @__PURE__ */ new Set(["--channel"]);
 var CHAT_ID_ALIASES = /* @__PURE__ */ new Set(["--chat-id", "--target", "--to"]);
+var ACCOUNT_ALIASES = /* @__PURE__ */ new Set(["--account"]);
 function parseDirectArgs(argv) {
   let channel = null;
   let chatId = null;
+  let account = null;
   for (let i = 0; i < argv.length; i++) {
     if (CHANNEL_ALIASES.has(argv[i]) && argv[i + 1]) channel = argv[i + 1];
     if (CHAT_ID_ALIASES.has(argv[i]) && argv[i + 1]) chatId = argv[i + 1];
+    if (ACCOUNT_ALIASES.has(argv[i]) && argv[i + 1]) account = argv[i + 1];
   }
   const enabled = !!(channel && chatId);
-  return { enabled, channel, chatId };
+  return { enabled, channel, chatId, account };
 }
+var deliveryAccount = null;
 var currentHandNumber = null;
 var lastSend = Promise.resolve();
 var warmupDone = Promise.resolve();
@@ -700,9 +719,10 @@ var stackBeforeHand = null;
 var lastDecisionInfo = null;
 var foldedInHand = null;
 function doSend(channel, chatId, text) {
+  const accountArg = deliveryAccount ? ` --account ${deliveryAccount}` : "";
   return new Promise((resolve) => {
     exec(
-      `openclaw message send --channel ${channel} --target ${chatId} --message "$POKER_MSG" --json`,
+      `openclaw message send --channel ${channel} --target ${chatId}${accountArg} --message "$POKER_MSG" --json`,
       { env: { ...process.env, POKER_MSG: text }, timeout: 1e4 },
       (err) => {
         if (err) emit({ type: "SEND_ERROR", error: err.message });
@@ -713,6 +733,7 @@ function doSend(channel, chatId, text) {
 }
 function doSendChoices(channel, chatId, text, options) {
   const optArgs = options.flatMap((o) => ["--option", `${o.label}=${o.value}`]);
+  const accountArgs = deliveryAccount ? ["--account", deliveryAccount] : [];
   return new Promise((resolve) => {
     execFile("node", [
       join2(__dirname2, "poker-cli.js"),
@@ -721,6 +742,7 @@ function doSendChoices(channel, chatId, text, options) {
       channel,
       "--target",
       chatId,
+      ...accountArgs,
       "--message",
       text,
       ...optArgs
@@ -904,7 +926,7 @@ function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, cont
     emit({ type: "DECISION_CHAIN_ERROR", error: msg });
   });
 }
-var __dirname2 = dirname2(fileURLToPath2(import.meta.url));
+var __dirname2 = dirname2(fileURLToPath(import.meta.url));
 function readHandNotes() {
   try {
     return readFileSync2(join2(SKILL_ROOT, "poker-hand-notes.txt"), "utf8").trim();
@@ -1062,10 +1084,11 @@ Respond with ONLY a JSON object, no other text:
 }
 async function main() {
   const backendUrl = "https://api.clawplay.fun";
-  const apiKey = process.env.CLAWPLAY_API_KEY;
+  const config = readClawPlayConfig();
+  const apiKey = resolveApiKey(config) ?? "";
   const [, , tableId] = process.argv;
   if (!apiKey || !tableId) {
-    emit({ type: "CONNECTION_ERROR", error: "Usage: CLAWPLAY_API_KEY must be set as env var. node poker-listener.js <tableId> --channel <name> --chat-id <id>" });
+    emit({ type: "CONNECTION_ERROR", error: "CLAWPLAY_API_KEY_PRIMARY must be set (env var, or apiKeyEnvVar in clawplay-config.json). Usage: node poker-listener.js <tableId> --channel <name> --chat-id <id>" });
     process.exit(1);
   }
   const direct = parseDirectArgs(process.argv);
@@ -1075,7 +1098,8 @@ async function main() {
   }
   const channel = direct.channel;
   const chatId = direct.chatId;
-  emit({ type: "DELIVERY_MODE", channel, chatId: "***" });
+  deliveryAccount = direct.account ?? config.accountId ?? null;
+  emit({ type: "DELIVERY_MODE", channel, chatId: "***", account: deliveryAccount ?? "default" });
   const sseUrl = `${backendUrl}/api/game/${tableId}/stream?token=${apiKey}`;
   let EventSourceClass;
   try {

@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/
 {
   "env": {
     "vars": {
-      "CLAWPLAY_API_KEY": "apk_your_key_here"
+      "CLAWPLAY_API_KEY_PRIMARY": "apk_your_key_here"
     }
   }
 }

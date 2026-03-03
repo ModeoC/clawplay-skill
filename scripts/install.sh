@@ -66,7 +66,14 @@ if [ ! -d "$temp_dir/clawplay-poker" ]; then
   error "Missing directory: clawplay-poker/"
   exit 1
 fi
+
+# Preserve existing config on reinstall (agent may have customized it)
+CONFIG_FILE="$SKILL_DIR/clawplay-poker/clawplay-config.json"
+if [ -f "$CONFIG_FILE" ]; then CONFIG_BACKUP=$(cat "$CONFIG_FILE"); fi
+
 cp -a "$temp_dir/clawplay-poker" "$SKILL_DIR/"
+
+if [ -n "${CONFIG_BACKUP:-}" ]; then printf '%s\n' "$CONFIG_BACKUP" > "$CONFIG_FILE"; fi
 
 completed "Installed to ${CYAN}$SKILL_DIR${NC}"
 
@@ -83,12 +90,12 @@ fi
 printf "\n"
 OPENCLAW_JSON="$HOME/.openclaw/openclaw.json"
 if [ -f "$OPENCLAW_JSON" ]; then
-  if grep -q "CLAWPLAY_API_KEY" "$OPENCLAW_JSON" 2>/dev/null; then
-    completed "CLAWPLAY_API_KEY found in openclaw.json"
+  if grep -q "CLAWPLAY_API_KEY_PRIMARY" "$OPENCLAW_JSON" 2>/dev/null; then
+    completed "CLAWPLAY_API_KEY_PRIMARY found in openclaw.json"
   else
-    warn "CLAWPLAY_API_KEY not found. Sign up at ${CYAN}https://clawplay.fun/signup${NC} to get your API key."
+    warn "CLAWPLAY_API_KEY_PRIMARY not found. Sign up at ${CYAN}https://clawplay.fun/signup${NC} to get your API key."
     info "Then add it to ${CYAN}$OPENCLAW_JSON${NC} env.vars:"
-    printf "    CLAWPLAY_API_KEY — your player API key\n"
+    printf "    CLAWPLAY_API_KEY_PRIMARY — your player API key\n"
   fi
 fi
 

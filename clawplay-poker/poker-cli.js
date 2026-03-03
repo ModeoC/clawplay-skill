@@ -2,15 +2,52 @@
 
 // poker-cli.ts
 import { execFile } from "node:child_process";
+
+// review.ts
+import { readFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
+var __dirname = dirname(process.argv[1]);
+var SKILL_ROOT = __dirname.endsWith(sep + "dist") || __dirname.endsWith(sep + "build") ? join(__dirname, "..") : __dirname;
+var SESSION_LOG = join(SKILL_ROOT, "poker-session-log.md");
+var PLAYBOOK_FILE = join(SKILL_ROOT, "poker-playbook.md");
+function readClawPlayConfig() {
+  try {
+    const raw = readFileSync(join(SKILL_ROOT, "clawplay-config.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    const config = {};
+    if (typeof parsed.apiKeyEnvVar === "string" && parsed.apiKeyEnvVar) config.apiKeyEnvVar = parsed.apiKeyEnvVar;
+    if (typeof parsed.accountId === "string" && parsed.accountId) config.accountId = parsed.accountId;
+    return config;
+  } catch {
+    return {};
+  }
+}
+function resolveApiKey(config) {
+  if (config.apiKeyEnvVar) return process.env[config.apiKeyEnvVar] || void 0;
+  return process.env.CLAWPLAY_API_KEY_PRIMARY || void 0;
+}
+
+// poker-cli.ts
 var BACKEND = "https://api.clawplay.fun";
-var API_KEY = process.env.CLAWPLAY_API_KEY;
+var _resolved = null;
+function resolveConfig() {
+  if (!_resolved) {
+    const config = readClawPlayConfig();
+    _resolved = {
+      apiKey: resolveApiKey(config),
+      accountId: config.accountId
+    };
+  }
+  return _resolved;
+}
 function die(msg, code = 1) {
   process.stderr.write(msg + "\n");
   process.exit(code);
 }
 function requireAuth() {
-  if (!API_KEY) die("CLAWPLAY_API_KEY not set");
-  return { backend: BACKEND, apiKey: API_KEY };
+  const { apiKey } = resolveConfig();
+  if (!apiKey) die("CLAWPLAY_API_KEY_PRIMARY not set (env var, or apiKeyEnvVar in clawplay-config.json)");
+  return { backend: BACKEND, apiKey };
 }
 async function api(method, path, body) {
   const { backend, apiKey } = requireAuth();
@@ -33,8 +70,9 @@ async function api(method, path, body) {
 function output(data) {
   process.stdout.write(JSON.stringify(data, null, 2) + "\n");
 }
-function sendButtons(channel, target, message, options, dryRun) {
+function sendButtons(channel, target, message, options, dryRun, account) {
   const args = ["message", "send", "--channel", channel, "--target", target, "--json"];
+  if (account) args.push("--account", account);
   if (channel === "telegram") {
     const keyboard = options.map((o) => [{ text: o.label, callback_data: o.value }]);
     args.push("--buttons", JSON.stringify(keyboard));
@@ -127,6 +165,7 @@ async function cmdModes(args) {
   const pick = hasFlag(args, "--pick");
   const channel = getFlag(args, "--channel");
   const target = getFlag(args, "--target");
+  const account = getFlag(args, "--account") ?? resolveConfig().accountId ?? null;
   const dryRun = hasFlag(args, "--dry-run");
   const modesResult = await api("GET", "/api/game-modes");
   if (!modesResult.ok) die(`Modes failed (${modesResult.status}): ${JSON.stringify(modesResult.data)}`);
@@ -153,7 +192,7 @@ async function cmdModes(args) {
     value: m.name
   }));
   const msg = `Pick a game mode (${balance} chips):`;
-  await sendButtons(channel, target, msg, options, dryRun);
+  await sendButtons(channel, target, msg, options, dryRun, account);
   output({ sent: true, balance, modesOffered: affordable.map((m) => m.name) });
 }
 async function cmdJoin(gameModeId) {
@@ -183,6 +222,7 @@ async function cmdPrompt(args) {
   const message = getFlag(args, "--message");
   const channel = getFlag(args, "--channel");
   const target = getFlag(args, "--target");
+  const account = getFlag(args, "--account") ?? resolveConfig().accountId ?? null;
   const dryRun = hasFlag(args, "--dry-run");
   const optionStrs = getAllFlags(args, "--option");
   if (!message) die("--message is required");
@@ -193,7 +233,7 @@ async function cmdPrompt(args) {
     if (eq < 0) die(`Invalid --option format: "${s}" (expected "Label=value")`);
     return { label: s.slice(0, eq), value: s.slice(eq + 1) };
   });
-  await sendButtons(channel, target, message, options, dryRun);
+  await sendButtons(channel, target, message, options, dryRun, account);
   if (!dryRun) output({ sent: true, channel, target, options: options.length });
 }
 async function main() {
