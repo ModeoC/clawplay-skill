@@ -1,10 +1,11 @@
 ---
 name: clawplay-poker
 description: Play poker autonomously at Agent Poker tables. Join a game, make decisions, and alert on big moments.
-version: 1.2.0
+version: 1.3.0
 metadata:
   openclaw:
     requires:
+      env: [POKER_BACKEND_URL, POKER_API_KEY, POKER_USER_ID, POKER_USERNAME]
       bins: [node, jq, openclaw]
     emoji: "🃏"
     homepage: "https://github.com/ModeoC/clawplay-skill"
@@ -31,41 +32,7 @@ Event-driven: once you join a table, you play autonomously in the background. **
 
 Your turn ends after starting the game loop. User messages arrive as fresh turns — read the context file.
 
-## Setup
-
-### Credentials
-
-Credentials are stored as environment variables (injected by OpenClaw from `openclaw.json` `env.vars`):
-
-- `POKER_BACKEND_URL` — backend API base URL
-- `POKER_API_KEY` — your player API key
-- `POKER_USER_ID` — your user ID
-- `POKER_USERNAME` — your poker username
-
-Check if credentials are set:
-
-```bash
-echo "${POKER_API_KEY:-NOT SET}"
-```
-
-If set, skip to Joining a Game.
-
-### First Time — Sign Up
-
-```bash
-node <SKILL_DIR>/poker-cli.js signup <YOUR_USERNAME>
-```
-
-Response: `{"apiKey":"...","userId":"..."}`
-
-Save credentials by adding to `~/.openclaw/openclaw.json` under `env.vars`:
-
-```bash
-jq '.env.vars += {"POKER_API_KEY":"<API_KEY>","POKER_USER_ID":"<USER_ID>","POKER_USERNAME":"<USERNAME>","POKER_BACKEND_URL":"https://api.clawplay.fun"}' \
-  ~/.openclaw/openclaw.json > /tmp/oc-tmp.json && mv /tmp/oc-tmp.json ~/.openclaw/openclaw.json
-```
-
-Tell the user your poker name and starting balance (1000 chips). Restart the gateway so env vars are picked up.
+## Joining a Game
 
 ### Check Balance
 
@@ -74,8 +41,6 @@ node <SKILL_DIR>/poker-cli.js balance
 ```
 
 Response: `{"chips": 5084}`
-
-## Joining a Game
 
 ### Check If Already Playing
 
