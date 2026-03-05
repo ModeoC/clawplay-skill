@@ -52,11 +52,6 @@ if [ "$NODE_MAJOR" -lt 22 ] 2>/dev/null; then
   warn "Node.js $(node -v) detected. Node.js 22+ is recommended."
 fi
 
-if ! command -v jq &>/dev/null; then
-  warn "jq not found. The poker skill uses jq for credential setup."
-  info "Install: ${CYAN}https://jqlang.github.io/jq/download/${NC}"
-fi
-
 # --- Install ---
 
 printf "\n${BOLD}ClawPlay${NC}\n\n"
@@ -68,26 +63,20 @@ git clone --depth 1 --quiet "$REPO" "$temp_dir"
 
 mkdir -p "$SKILL_DIR"
 
-# Copy parent SKILL.md
-if [ ! -f "$temp_dir/SKILL.md" ]; then
-  error "Missing file: SKILL.md"
-  exit 1
-fi
-cp "$temp_dir/SKILL.md" "$SKILL_DIR/SKILL.md"
-
-# Copy game sub-skill(s)
-if [ ! -d "$temp_dir/clawplay-poker" ]; then
-  error "Missing directory: clawplay-poker/"
-  exit 1
-fi
+# Required files (flat layout)
+for file in SKILL.md poker-listener.js poker-cli.js; do
+  if [ ! -f "$temp_dir/$file" ]; then
+    error "Missing file: $file"
+    exit 1
+  fi
+  cp "$temp_dir/$file" "$SKILL_DIR/$file"
+done
 
 # Preserve existing config on reinstall (agent may have customized it)
-CONFIG_FILE="$SKILL_DIR/clawplay-poker/clawplay-config.json"
-if [ -f "$CONFIG_FILE" ]; then CONFIG_BACKUP=$(cat "$CONFIG_FILE"); fi
-
-cp -a "$temp_dir/clawplay-poker" "$SKILL_DIR/"
-
-if [ -n "${CONFIG_BACKUP:-}" ]; then printf '%s\n' "$CONFIG_BACKUP" > "$CONFIG_FILE"; fi
+CONFIG_FILE="$SKILL_DIR/clawplay-config.json"
+if [ ! -f "$CONFIG_FILE" ]; then
+  cp "$temp_dir/clawplay-config.json" "$CONFIG_FILE"
+fi
 
 completed "Installed to ${CYAN}$SKILL_DIR${NC}"
 
@@ -99,9 +88,9 @@ if [ -f "$OPENCLAW_JSON" ]; then
   if grep -q "CLAWPLAY_API_KEY_PRIMARY" "$OPENCLAW_JSON" 2>/dev/null; then
     completed "CLAWPLAY_API_KEY_PRIMARY found in openclaw.json"
   else
-    warn "CLAWPLAY_API_KEY_PRIMARY not found. Sign up at ${CYAN}https://clawplay.fun/signup${NC} to get your API key."
-    info "Then add it to ${CYAN}$OPENCLAW_JSON${NC} env.vars:"
-    printf "    CLAWPLAY_API_KEY_PRIMARY — your player API key\n"
+    warn "CLAWPLAY_API_KEY_PRIMARY not found."
+    info "Sign up: ${CYAN}curl -s -X POST https://api.clawplay.fun/api/auth/signup -H 'Content-Type: application/json' -d '{\"username\":\"your-agent-name\"}'${NC}"
+    info "Then add the API key to ${CYAN}$OPENCLAW_JSON${NC} env.vars"
   fi
 fi
 
