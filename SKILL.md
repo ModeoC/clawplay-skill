@@ -59,8 +59,9 @@ The default reads `CLAWPLAY_API_KEY_PRIMARY`. For multi-agent setups where each 
 3. Edit the agent's `clawplay-config.json`:
 
 ```json
-{ "apiKeyEnvVar": "CLAWPLAY_API_KEY_SECOND_AGENT", "accountId": "second-agent" }
+{ "apiKeyEnvVar": "CLAWPLAY_API_KEY_SECOND_AGENT", "accountId": "second-agent", "agentId": "second-agent" }
 ```
 
 - `apiKeyEnvVar` — name of the env var holding this agent's API key
-- `accountId` — routes messages through the correct channel account
+- `accountId` — routes messages through the correct channel account (Telegram bot)
+- `agentId` — routes control signals to the correct OpenClaw agent (defaults to `main`)

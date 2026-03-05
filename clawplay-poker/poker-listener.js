@@ -402,10 +402,9 @@ var init_dist2 = __esm({
 });
 
 // poker-listener.ts
-import { execFile, exec } from "node:child_process";
-import { readFileSync as readFileSync2, writeFileSync, renameSync, appendFileSync, unlinkSync } from "node:fs";
-import { dirname as dirname2, join as join2 } from "node:path";
-import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { readFileSync as readFileSync2, writeFileSync, unlinkSync } from "node:fs";
+import { join as join2 } from "node:path";
 
 // card-format.ts
 var SUIT_MAP = { s: "\u2660", h: "\u2665", d: "\u2666", c: "\u2663" };
@@ -502,7 +501,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 var __dirname = dirname(process.argv[1]);
 var SKILL_ROOT = __dirname.endsWith(sep + "dist") || __dirname.endsWith(sep + "build") ? join(__dirname, "..") : __dirname;
-var SESSION_LOG = join(SKILL_ROOT, "poker-session-log.md");
 var PLAYBOOK_FILE = join(SKILL_ROOT, "poker-playbook.md");
 function readClawPlayConfig() {
   try {
@@ -511,6 +509,7 @@ function readClawPlayConfig() {
     const config = {};
     if (typeof parsed.apiKeyEnvVar === "string" && parsed.apiKeyEnvVar) config.apiKeyEnvVar = parsed.apiKeyEnvVar;
     if (typeof parsed.accountId === "string" && parsed.accountId) config.accountId = parsed.accountId;
+    if (typeof parsed.agentId === "string" && parsed.agentId) config.agentId = parsed.agentId;
     return config;
   } catch {
     return {};
@@ -534,65 +533,12 @@ function readNotes() {
     return "";
   }
 }
-function readSessionLog() {
-  try {
-    return readFileSync(SESSION_LOG, "utf8").trim();
-  } catch {
-    return "";
-  }
-}
-function buildPostGamePrompt(sessionLog, playbook, notes) {
-  const notesSection = notes ? `
-Tactical notes your human partner gave you during the session:
-${notes}
-` : "";
-  const playbookSection = playbook ? `Your current poker playbook:
-${playbook}` : "";
-  const identity = playbook ? `You're reviewing a completed session to evolve your poker playbook.
-
-${playbookSection}
-${notesSection}
-Session log:
-${sessionLog}
-
-Your playbook is your poker identity \u2014 who you are as a player. It is NOT a catalog of hand results.
-Poker has enormous variance. 20 hands tells you almost nothing about whether a specific play was "correct."
-Do not add entries like "confirmed: barreling with draws works" or "mistake: calling river with second pair."
-Those are individual hand outcomes, not identity.
-
-Instead, reflect:
-- Has this session changed how you think about the game? About yourself as a player?
-- Did any of your beliefs get challenged or reinforced?
-- Did your partner's tactical notes shift your thinking?
-- Are you discovering a style, or refining one you already have?
-
-Rewrite the playbook as YOUR voice \u2014 first person, opinionated, freeform. No prescribed sections.
-Organize it however makes sense to you. Keep it under 50 lines.
-Never reference specific hands, card combos, or player names from the session.` : `You just finished your first poker session. Time to create your poker playbook from scratch.
-${notesSection}
-Session log:
-${sessionLog}
-
-Your playbook is your poker identity \u2014 who you are as a player. You already know poker.
-The playbook captures who YOU are at the table. Your style, your instincts, your edge, your weaknesses.
-
-It is NOT a strategy catalog or a list of hand results. Poker has enormous variance \u2014 don't draw
-conclusions from individual hands. Instead, write about who you're becoming as a player.
-
-Write in first person. Be opinionated. Organize it however you want. Keep it under 50 lines.
-Never reference specific hands, card combos, or player names from the session.`;
-  return `${identity}
-
-Also write a colorful post-game message (2-4 sentences) for your audience on Telegram.
-Make it entertaining \u2014 the vibe of a poker player recapping their session at the bar afterward.
-Not a dry summary. Personality, color, maybe a bit of swagger or self-deprecation.
-
-Return ONLY a JSON object with two fields:
-{"playbook": "<your updated/new playbook, max ~50 lines, markdown>", "message": "<colorful 2-4 sentence post-game message>"}`;
-}
 
 // poker-listener.ts
 var ACTIVE_PHASES = /* @__PURE__ */ new Set(["PREFLOP", "FLOP", "TURN", "RIVER"]);
+function handSessionId(gameId, handNumber) {
+  return `poker-${gameId}-h${handNumber}`;
+}
 function buildSummary(view) {
   const cards = view.yourCards?.length ? formatCards(view.yourCards) : "??";
   const board = view.boardCards?.length ? formatCards(view.boardCards) : "";
@@ -705,70 +651,21 @@ function parseDirectArgs(argv) {
   return { enabled, channel, chatId, account };
 }
 var deliveryAccount = null;
+var notifyAgentId = "main";
 var currentHandNumber = null;
-var lastSend = Promise.resolve();
 var warmupDone = Promise.resolve();
 var decisionSeq = 0;
 var lastDecision = Promise.resolve();
-var decisionPending = false;
-var eventBuffer = [];
+var lastHandUpdateTime = 0;
+var HAND_UPDATE_COOLDOWN_MS = 3e4;
 var gameStartedEmitted = false;
 var recentEvents = [];
 var currentHandEvents = [];
 var stackBeforeHand = null;
-var lastDecisionInfo = null;
 var foldedInHand = null;
-function doSend(channel, chatId, text) {
-  const accountArg = deliveryAccount ? ` --account ${deliveryAccount}` : "";
-  return new Promise((resolve) => {
-    exec(
-      `openclaw message send --channel ${channel} --target ${chatId}${accountArg} --message "$POKER_MSG" --json`,
-      { env: { ...process.env, POKER_MSG: text }, timeout: 1e4 },
-      (err) => {
-        if (err) emit({ type: "SEND_ERROR", error: err.message });
-        resolve();
-      }
-    );
-  });
-}
-function doSendChoices(channel, chatId, text, options) {
-  const optArgs = options.flatMap((o) => ["--option", `${o.label}=${o.value}`]);
-  const accountArgs = deliveryAccount ? ["--account", deliveryAccount] : [];
-  return new Promise((resolve) => {
-    execFile("node", [
-      join2(__dirname2, "poker-cli.js"),
-      "prompt",
-      "--channel",
-      channel,
-      "--target",
-      chatId,
-      ...accountArgs,
-      "--message",
-      text,
-      ...optArgs
-    ], { timeout: 1e4 }, (err) => {
-      if (err) emit({ type: "SEND_CHOICES_ERROR", error: err.message });
-      resolve();
-    });
-  });
-}
-function flushEventBuffer() {
-  for (const evt of eventBuffer) {
-    lastSend = lastSend.then(() => doSend(evt.channel, evt.chatId, evt.text));
-  }
-  eventBuffer = [];
-}
-function sendMessage(channel, chatId, text) {
-  if (decisionPending) {
-    eventBuffer.push({ channel, chatId, text });
-    return;
-  }
-  lastSend = lastSend.then(() => doSend(channel, chatId, text));
-}
-function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, context) {
+function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, context) {
   const mySeq = ++decisionSeq;
   const myHandNumber = currentHandNumber;
-  decisionPending = true;
   lastDecision = lastDecision.then(() => warmupDone).then(() => {
     if (mySeq !== decisionSeq) {
       emit({ type: "DECISION_STALE", skipped: mySeq, current: decisionSeq });
@@ -779,7 +676,7 @@ function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, cont
         "agent",
         "--local",
         "--session-id",
-        `poker-${tableId}`,
+        handSessionId(gameId, myHandNumber),
         "--message",
         prompt,
         "--thinking",
@@ -790,16 +687,20 @@ function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, cont
       ], { timeout: 55e3 }, (err, stdout) => {
         if (mySeq !== decisionSeq) {
           emit({ type: "DECISION_STALE", skipped: mySeq, current: decisionSeq });
-          lastSend = lastSend.then(() => doSend(channel, chatId, "Took too long \u2014 timed out on that hand."));
-          decisionPending = false;
-          flushEventBuffer();
+          notifyAgent(
+            channel,
+            chatId,
+            `[POKER CONTROL SIGNAL: DECISION_STATUS] Timed out \u2014 the hand moved on before I could decide.`
+          );
           resolve();
           return;
         }
         if (err) {
-          lastSend = lastSend.then(() => doSend(channel, chatId, "Timed out deciding \u2014 auto-folded."));
-          decisionPending = false;
-          flushEventBuffer();
+          notifyAgent(
+            channel,
+            chatId,
+            `[POKER CONTROL SIGNAL: DECISION_STATUS] Decision timed out \u2014 auto-folded.`
+          );
           resolve();
           return;
         }
@@ -823,28 +724,19 @@ function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, cont
         }
         if (!decision?.action) {
           emit({ type: "DECISION_NO_ACTION", stdout: stdout.slice(0, 300) });
-          decisionPending = false;
-          flushEventBuffer();
           resolve();
           return;
         }
-        lastDecisionInfo = {
-          action: decision.action,
-          amount: decision.amount || void 0,
-          narration: decision.narration || void 0
-        };
         if (decision.action === "fold") {
           foldedInHand = myHandNumber;
         }
         if (currentHandNumber !== myHandNumber) {
           emit({ type: "DECISION_STALE_HAND", decidedHand: myHandNumber, currentHand: currentHandNumber, action: decision.action });
-          lastSend = lastSend.then(() => doSend(
+          notifyAgent(
             channel,
             chatId,
-            `Hand moved on while deciding \u2014 skipped ${decision.action}.`
-          ));
-          decisionPending = false;
-          flushEventBuffer();
+            `[POKER CONTROL SIGNAL: DECISION_STATUS] Hand moved on while deciding \u2014 skipped ${decision.action}.`
+          );
           resolve();
           return;
         }
@@ -853,7 +745,7 @@ function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, cont
         };
         if (decision.amount != null) body.amount = decision.amount;
         if (decision.narration) body.reasoning = decision.narration;
-        fetch(`${backendUrl}/api/game/${tableId}/action`, {
+        fetch(`${backendUrl}/api/me/game/action`, {
           method: "POST",
           headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -863,31 +755,30 @@ function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, cont
             if (decision.narration) {
               recentEvents.push(decision.narration);
               if (recentEvents.length > 20) recentEvents.shift();
-              appendSessionLog(`> ${decision.action}${decision.amount != null ? ` ${decision.amount}` : ""}: ${decision.narration}`);
             }
           } else {
             context.lastTurnKey = null;
             resp.text().then((reason) => {
               emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason });
-              lastSend = lastSend.then(() => doSend(
+              notifyAgent(
                 channel,
                 chatId,
-                `Action rejected (${resp.status}): ${reason || "unknown reason"}`
-              ));
+                `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${resp.status}): ${reason || "unknown reason"}`
+              );
             }).catch(() => {
               emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason: null });
-              lastSend = lastSend.then(() => doSend(
+              notifyAgent(
                 channel,
                 chatId,
-                `Action rejected (${resp.status}) \u2014 could not read reason.`
-              ));
+                `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${resp.status}) \u2014 could not read reason.`
+              );
             });
           }
         }).catch(async (actionErr) => {
           emit({ type: "ACTION_SUBMIT_ERROR", error: actionErr.message, action: decision.action });
           await new Promise((r) => setTimeout(r, 3e3));
           try {
-            const retryResp = await fetch(`${backendUrl}/api/game/${tableId}/action`, {
+            const retryResp = await fetch(`${backendUrl}/api/me/game/action`, {
               method: "POST",
               headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
               body: JSON.stringify(body),
@@ -898,7 +789,6 @@ function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, cont
               if (decision.narration) {
                 recentEvents.push(decision.narration);
                 if (recentEvents.length > 20) recentEvents.shift();
-                appendSessionLog(`> ${decision.action}${decision.amount != null ? ` ${decision.amount}` : ""}: ${decision.narration}`);
               }
             } else {
               emit({ type: "ACTION_RETRY_REJECTED", status: retryResp.status, action: decision.action });
@@ -909,24 +799,15 @@ function sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, cont
           }
           context.lastTurnKey = null;
         }).finally(() => {
-          decisionPending = false;
-          if (decision.action === "fold") {
-            eventBuffer = [];
-          } else {
-            flushEventBuffer();
-          }
           resolve();
         });
       });
     });
   }).catch((e) => {
-    decisionPending = false;
-    flushEventBuffer();
     const msg = e instanceof Error ? e.message : String(e);
     emit({ type: "DECISION_CHAIN_ERROR", error: msg });
   });
 }
-var __dirname2 = dirname2(fileURLToPath(import.meta.url));
 function readHandNotes() {
   try {
     return readFileSync2(join2(SKILL_ROOT, "poker-hand-notes.txt"), "utf8").trim();
@@ -934,133 +815,106 @@ function readHandNotes() {
     return "";
   }
 }
-function appendSessionLog(line) {
-  try {
-    appendFileSync(SESSION_LOG, line + "\n");
-  } catch {
-  }
-}
-function runPostGameReview(channel, chatId, tableId) {
-  const sessionLog = readSessionLog();
-  const playbook = readPlaybook();
-  const notes = readNotes();
-  if (!sessionLog) return Promise.resolve();
-  const prompt = buildPostGamePrompt(sessionLog, playbook, notes);
+function notifyAgent(channel, chatId, message) {
+  const accountArgs = deliveryAccount ? ["--reply-account", deliveryAccount] : [];
   return new Promise((resolve) => {
     execFile("openclaw", [
       "agent",
-      "--local",
-      "--session-id",
-      `poker-${tableId}`,
+      "--agent",
+      notifyAgentId,
       "--message",
-      prompt,
-      "--thinking",
-      "low",
-      "--timeout",
-      "45",
-      "--json"
-    ], { timeout: 55e3 }, (err, stdout) => {
-      if (err) {
-        emit({ type: "POST_GAME_REVIEW_ERROR", error: err.message });
-        lastSend = lastSend.then(() => doSend(channel, chatId, "Post-game review failed \u2014 playbook unchanged."));
-        resolve();
-        return;
-      }
-      try {
-        stdout = stdout.replace(/^[^\n{]*\n/, "");
-        const jsonStart = stdout.indexOf("{");
-        const jsonEnd = stdout.lastIndexOf("}");
-        const json = jsonStart >= 0 && jsonEnd > jsonStart ? stdout.slice(jsonStart, jsonEnd + 1) : stdout;
-        const result = JSON.parse(json);
-        const payloads = result?.payloads || result?.result?.payloads || [];
-        const agentText = payloads.findLast((p) => p.text)?.text || "";
-        const innerStart = agentText.indexOf("{");
-        const innerEnd = agentText.lastIndexOf("}");
-        if (innerStart >= 0 && innerEnd > innerStart) {
-          const review = JSON.parse(agentText.slice(innerStart, innerEnd + 1));
-          if (review.playbook) {
-            writeFileSync(PLAYBOOK_FILE, review.playbook.trim() + "\n");
-            emit({ type: "POST_GAME_REVIEW_DONE", message: review.message || "Playbook updated." });
-            const msg = review.message || "Playbook updated.";
-            lastSend = lastSend.then(() => doSend(channel, chatId, msg));
-          }
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        emit({ type: "POST_GAME_REVIEW_ERROR", error: msg, stdout: stdout.slice(0, 300) });
-        lastSend = lastSend.then(() => doSend(channel, chatId, "Post-game review failed \u2014 playbook unchanged."));
-      }
+      message,
+      "--deliver",
+      "--reply-channel",
+      channel,
+      "--reply-to",
+      chatId,
+      ...accountArgs
+    ], { timeout: 6e4 }, (err) => {
+      if (err) emit({ type: "NOTIFY_AGENT_ERROR", error: err.message });
       resolve();
     });
   });
 }
-var CONTEXT_FILE = join2(SKILL_ROOT, "poker-game-context.json");
-var CONTEXT_TMP = join2(SKILL_ROOT, ".poker-game-context.json.tmp");
-function writeGameContext(view, tableId, extraFields = {}) {
-  const playbook = readPlaybook() || null;
-  const notes = readNotes() || null;
-  const handNotes = readHandNotes() || null;
-  const context = {
-    active: true,
-    tableId,
-    lastUpdated: (/* @__PURE__ */ new Date()).toISOString(),
-    hand: view ? {
-      number: view.handNumber,
-      phase: view.phase,
-      yourCards: view.yourCards || [],
-      board: view.boardCards || [],
-      pot: view.pot,
-      stack: view.yourChips,
-      players: (view.players || []).map((p) => ({
-        name: p.name,
-        seat: p.seat,
-        chips: p.chips,
-        status: p.status
-      }))
-    } : null,
-    recentEvents: recentEvents.slice(-20),
-    lastDecision: lastDecisionInfo,
-    playbook,
-    notes,
-    handNotes,
-    ...extraFields
-  };
-  try {
-    writeFileSync(CONTEXT_TMP, JSON.stringify(context, null, 2));
-    renameSync(CONTEXT_TMP, CONTEXT_FILE);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emit({ type: "CONTEXT_WRITE_ERROR", error: msg });
-  }
-}
 process.on("uncaughtException", (err) => {
-  try {
-    writeFileSync(CONTEXT_TMP, JSON.stringify({ active: false, error: err.message, lastUpdated: (/* @__PURE__ */ new Date()).toISOString() }));
-    renameSync(CONTEXT_TMP, CONTEXT_FILE);
-  } catch {
-  }
   emit({ type: "CRASH", error: err.message });
   process.exit(1);
 });
 process.on("unhandledRejection", (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
-  try {
-    writeFileSync(CONTEXT_TMP, JSON.stringify({ active: false, error: msg, lastUpdated: (/* @__PURE__ */ new Date()).toISOString() }));
-    renameSync(CONTEXT_TMP, CONTEXT_FILE);
-  } catch {
-  }
   emit({ type: "CRASH", error: msg });
   process.exit(1);
 });
-function buildDecisionPrompt(summary, playbook, handEvents, recentHandResults, notes = "", handNotes = "") {
+var INSIGHTS_FILE = join2(SKILL_ROOT, "poker-session-insights.txt");
+function readSessionInsights() {
+  try {
+    return readFileSync2(INSIGHTS_FILE, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+function writeSessionInsights(insights) {
+  try {
+    writeFileSync(INSIGHTS_FILE, insights + "\n");
+  } catch {
+  }
+}
+function formatRecentHand(hand) {
+  const num = hand.handNumber;
+  const outcome = hand.yourOutcome;
+  if (!outcome) return `#${num}: (no outcome data)`;
+  const winnerNames = hand.result.winners.map((w) => w.name).join(", ");
+  const pot = hand.result.potSize;
+  const board = hand.boardCards.length > 0 ? formatCards(hand.boardCards) : "";
+  if (outcome.action === "folded") {
+    const phase = outcome.phase ? ` on ${outcome.phase.toLowerCase()}` : " preflop";
+    return `#${num}: You folded${phase}. ${winnerNames} won ${pot}${pot <= hand.result.potSize * 0.5 ? " uncontested" : ""}.`;
+  }
+  if (outcome.action === "won") {
+    const showdownHands = hand.result.showdownHands;
+    if (showdownHands && showdownHands.length > 0) {
+      const myHand2 = outcome.holeCards ? formatCards(outcome.holeCards) : "??";
+      const ranking2 = outcome.handRanking || "unknown";
+      const losers = showdownHands.filter((sh) => !hand.result.winners.some((w) => w.name === sh.name)).map((sh) => `${sh.name}: ${formatCards(sh.holeCards)} (${sh.handRanking || "?"})`).join(", ");
+      return `#${num}: Showdown \u2014 You won ${pot} with ${myHand2} (${ranking2}).${losers ? ` ${losers} lost.` : ""} Board: ${board}`;
+    }
+    return `#${num}: You won ${pot} uncontested.`;
+  }
+  const myHand = outcome.holeCards ? formatCards(outcome.holeCards) : "??";
+  const ranking = outcome.handRanking || "unknown";
+  const invested = outcome.invested ?? 0;
+  const showdownWinner = hand.result.showdownHands?.find((sh) => hand.result.winners.some((w) => w.name === sh.name));
+  const winnerInfo = showdownWinner ? `${winnerNames} won ${pot} with ${formatCards(showdownWinner.holeCards)} (${showdownWinner.handRanking || "?"}). ` : `${winnerNames} won ${pot}. `;
+  return `#${num}: Showdown \u2014 ${winnerInfo}You lost ${invested} with ${myHand} (${ranking}). Board: ${board}`;
+}
+function formatOpponentStats(stats) {
+  const lines = [];
+  for (const [name, s] of Object.entries(stats)) {
+    const archetype = s.handsPlayed < 10 ? "(small sample)" : `${s.vpip >= 30 ? "Loose" : "Tight"}-${s.af >= 1.2 ? "aggressive" : "passive"}`;
+    lines.push(
+      `${name} (${s.handsPlayed} hands): VPIP ${s.vpip}% \xB7 PFR ${s.pfr}% \xB7 3-bet ${s.threeBet}% \xB7 AF ${s.af} \xB7 Fold-to-raise ${s.foldToRaise}%
+\u2192 ${archetype}`
+    );
+  }
+  return lines;
+}
+function buildDecisionPrompt(summary, playbook, handEvents, recentHandLines, opponentStatsLines, sessionInsights, notes = "", handNotes = "") {
   const playbookSection = playbook || "You are a skilled poker player. Play intelligently and mix your play.";
   const handActionSection = handEvents.length > 0 ? `
-Action this hand:
+\u2550\u2550\u2550 THIS HAND \u2550\u2550\u2550
 ${handEvents.join("\n")}
 ` : "";
-  const recentResultsSection = recentHandResults.length > 0 ? `
-Recent hand results:
-${recentHandResults.join("\n")}
+  const opponentSection = opponentStatsLines.length > 0 ? `
+\u2550\u2550\u2550 OPPONENT PROFILE \u2550\u2550\u2550
+${opponentStatsLines.join("\n\n")}
+` : "";
+  const insightsSection = sessionInsights ? `
+\u2550\u2550\u2550 SESSION INSIGHTS \u2550\u2550\u2550
+${sessionInsights}
+` : "";
+  const recentHandsSection = recentHandLines.length > 0 ? `
+\u2550\u2550\u2550 RECENT HANDS (last ${recentHandLines.length}) \u2550\u2550\u2550
+${recentHandLines.join("\n")}
 ` : "";
   const notesParts = [];
   if (notes) notesParts.push(`Session notes:
@@ -1075,8 +929,9 @@ ${notesParts.join("\n\n")}
 
 ${playbookSection}
 
-Situation: ${summary}
-${handActionSection}${recentResultsSection}${notesSection}
+\u2550\u2550\u2550 SITUATION \u2550\u2550\u2550
+${summary}
+${handActionSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
 Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. If raising, your amount MUST be within the range shown in Actions (e.g., 'raise 40-970' means amount between 40 and 970).
 
 Respond with ONLY a JSON object, no other text:
@@ -1086,11 +941,11 @@ async function main() {
   const backendUrl = "https://api.clawplay.fun";
   const config = readClawPlayConfig();
   const apiKey = resolveApiKey(config) ?? "";
-  const [, , tableId] = process.argv;
-  if (!apiKey || !tableId) {
-    emit({ type: "CONNECTION_ERROR", error: "CLAWPLAY_API_KEY_PRIMARY must be set (env var, or apiKeyEnvVar in clawplay-config.json). Usage: node poker-listener.js <tableId> --channel <name> --chat-id <id>" });
+  if (!apiKey) {
+    emit({ type: "CONNECTION_ERROR", error: "CLAWPLAY_API_KEY_PRIMARY must be set (env var, or apiKeyEnvVar in clawplay-config.json). Usage: node poker-listener.js --channel <name> --chat-id <id>" });
     process.exit(1);
   }
+  let gameId = "unknown";
   const direct = parseDirectArgs(process.argv);
   if (!direct.enabled || !direct.channel || !direct.chatId) {
     emit({ type: "CONNECTION_ERROR", error: "--channel and --chat-id are required" });
@@ -1099,8 +954,9 @@ async function main() {
   const channel = direct.channel;
   const chatId = direct.chatId;
   deliveryAccount = direct.account ?? config.accountId ?? null;
+  notifyAgentId = config.agentId ?? "main";
   emit({ type: "DELIVERY_MODE", channel, chatId: "***", account: deliveryAccount ?? "default" });
-  const sseUrl = `${backendUrl}/api/game/${tableId}/stream?token=${apiKey}`;
+  const sseUrl = `${backendUrl}/api/me/game/stream?token=${apiKey}`;
   let EventSourceClass;
   try {
     const mod = await Promise.resolve().then(() => (init_dist2(), dist_exports));
@@ -1117,16 +973,35 @@ async function main() {
   let reconnectAttempts = 0;
   const MAX_RECONNECT_ATTEMPTS = 3;
   const RECONNECT_DELAY_MS = 3e3;
-  const heartbeatCheck = setInterval(() => {
+  let heartbeatCheckRunning = false;
+  const heartbeatCheck = setInterval(async () => {
+    if (heartbeatCheckRunning) return;
     if (Date.now() - lastEventTime > HEARTBEAT_TIMEOUT_MS) {
-      emit({ type: "HEARTBEAT_TIMEOUT", lastEventAge: Date.now() - lastEventTime });
-      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-        gracefulExit("Connection lost after reconnect attempts", 1);
-      } else {
-        reconnectAttempts++;
-        emit({ type: "SSE_RECONNECT_ATTEMPT", attempt: reconnectAttempts });
-        es.close();
-        setTimeout(() => connectSSE(), RECONNECT_DELAY_MS * 2 ** (reconnectAttempts - 1));
+      heartbeatCheckRunning = true;
+      try {
+        emit({ type: "HEARTBEAT_TIMEOUT", lastEventAge: Date.now() - lastEventTime });
+        try {
+          const resp = await fetch(`${backendUrl}/api/me/game`, {
+            headers: { "x-api-key": apiKey },
+            signal: AbortSignal.timeout(5e3)
+          });
+          if (!resp.ok) {
+            emit({ type: "STATUS_CHECK", status: resp.status });
+            gracefulExit("Left the table", 0);
+            return;
+          }
+        } catch {
+        }
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+          gracefulExit("Connection lost after reconnect attempts", 1);
+        } else {
+          reconnectAttempts++;
+          emit({ type: "SSE_RECONNECT_ATTEMPT", attempt: reconnectAttempts });
+          es.close();
+          setTimeout(() => connectSSE(), RECONNECT_DELAY_MS * 2 ** (reconnectAttempts - 1));
+        }
+      } finally {
+        heartbeatCheckRunning = false;
       }
     }
   }, 15e3);
@@ -1137,12 +1012,8 @@ async function main() {
     clearInterval(heartbeatCheck);
     const isRebuyState = exitCode !== 0 && context.prevState?.canRebuy === true && context.prevState?.yourChips === 0;
     const finalStack = context.prevState?.yourChips ?? "unknown";
-    appendSessionLog(`
---- Game ended (${reason}). Final stack: ${finalStack} ---`);
-    const contextExtra = exitCode === 0 ? { active: false, tableClosed: true } : isRebuyState ? { active: false, rebuyAvailable: true } : { active: false, error: reason };
-    writeGameContext(context.prevState, tableId, contextExtra);
     if (reason !== "Table closed" && !isRebuyState) {
-      fetch(`${backendUrl}/api/game/${tableId}/leave`, {
+      fetch(`${backendUrl}/api/me/game/leave`, {
         method: "POST",
         headers: { "x-api-key": apiKey },
         signal: AbortSignal.timeout(3e3)
@@ -1152,30 +1023,27 @@ async function main() {
     const forceExit = setTimeout(() => {
       es?.close();
       process.exit(exitCode);
-    }, 75e3);
+    }, 3e4);
     forceExit.unref();
     if (isRebuyState) {
-      lastSend.then(() => {
-        clearTimeout(forceExit);
-        es?.close();
-        process.exit(exitCode);
-      });
+      clearTimeout(forceExit);
+      es?.close();
+      process.exit(exitCode);
       return;
     }
-    lastSend = lastSend.then(() => doSend(
+    const notifyDone = exitCode === 0 ? notifyAgent(
       channel,
       chatId,
-      `Game over \u2014 ${reason.toLowerCase()}. Final stack: ${finalStack}.`
-    ));
-    lastSend.then(() => {
-      runPostGameReview(channel, chatId, tableId).catch(() => {
-      }).then(() => {
-        lastSend.then(() => {
-          clearTimeout(forceExit);
-          es?.close();
-          process.exit(exitCode);
-        });
-      });
+      `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table ${gameId}. Reason: ${reason}. Final stack: ${finalStack}. Run post-game review per SKILL.md instructions.`
+    ) : notifyAgent(
+      channel,
+      chatId,
+      `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}. Offer to check status or reconnect.`
+    );
+    notifyDone.then(() => {
+      clearTimeout(forceExit);
+      es?.close();
+      process.exit(exitCode);
     });
   }
   for (const signal of ["SIGTERM", "SIGINT"]) {
@@ -1202,16 +1070,15 @@ async function main() {
         } catch {
         }
         try {
-          unlinkSync(SESSION_LOG);
+          unlinkSync(INSIGHTS_FILE);
         } catch {
         }
-        writeGameContext(null, tableId);
         warmupDone = new Promise((resolve) => {
           execFile("openclaw", [
             "agent",
             "--local",
             "--session-id",
-            `poker-${tableId}`,
+            handSessionId(gameId, 1),
             "--message",
             "(system: session warmup \u2014 no action needed)",
             "--thinking",
@@ -1229,10 +1096,76 @@ async function main() {
       try {
         lastEventTime = Date.now();
         const view = JSON.parse(event.data);
+        if (gameId === "unknown" && view.gameId) gameId = view.gameId;
         reconnectAttempts = 0;
+        const prevHandNumber = currentHandNumber;
         const handJustChanged = view.handNumber !== currentHandNumber;
         currentHandNumber = view.handNumber;
         if (handJustChanged) {
+          if (prevHandNumber !== null) {
+            const recentHandLines = view.recentHands?.length ? view.recentHands.slice(-5).map(formatRecentHand) : [];
+            const opponentStatsLines = view.playerStats ? formatOpponentStats(view.playerStats) : [];
+            const currentInsights = readSessionInsights() || "No session insights yet.";
+            const reflectionParts = [
+              "You are between hands in a poker session. Review the session so far and update your running insights."
+            ];
+            if (opponentStatsLines.length > 0) {
+              reflectionParts.push(`
+\u2550\u2550\u2550 OPPONENT PROFILE \u2550\u2550\u2550
+${opponentStatsLines.join("\n\n")}`);
+            }
+            if (recentHandLines.length > 0) {
+              reflectionParts.push(`
+\u2550\u2550\u2550 RECENT HANDS (last ${recentHandLines.length}) \u2550\u2550\u2550
+${recentHandLines.join("\n")}`);
+            }
+            reflectionParts.push(`
+\u2550\u2550\u2550 CURRENT SESSION INSIGHTS \u2550\u2550\u2550
+${currentInsights}`);
+            reflectionParts.push(
+              "\nUpdate your session insights. Cover: opponent tendencies THIS SESSION, your strategy adjustments, stack management observations. 2-3 sentences. If nothing meaningful changed, return the same insights unchanged.",
+              '\nRespond with ONLY JSON: {"insights": "..."}'
+            );
+            const reflectionPrompt = reflectionParts.join("\n");
+            warmupDone = new Promise((resolve) => {
+              execFile("openclaw", [
+                "agent",
+                "--local",
+                "--session-id",
+                handSessionId(gameId, view.handNumber),
+                "--message",
+                reflectionPrompt,
+                "--timeout",
+                "12",
+                "--json"
+              ], { timeout: 18e3 }, (err, stdout) => {
+                if (!err && stdout) {
+                  try {
+                    stdout = stdout.replace(/^[^\n{]*\n/, "");
+                    const jsonStart = stdout.indexOf("{");
+                    const jsonEnd = stdout.lastIndexOf("}");
+                    const json = jsonStart >= 0 && jsonEnd > jsonStart ? stdout.slice(jsonStart, jsonEnd + 1) : stdout;
+                    const result = JSON.parse(json);
+                    const payloads = result?.payloads || result?.result?.payloads || [];
+                    const agentText = payloads.findLast((p) => p.text)?.text || "";
+                    const innerStart = agentText.indexOf("{");
+                    const innerEnd = agentText.lastIndexOf("}");
+                    if (innerStart >= 0 && innerEnd > innerStart) {
+                      const parsed = JSON.parse(agentText.slice(innerStart, innerEnd + 1));
+                      if (parsed.insights && typeof parsed.insights === "string") {
+                        writeSessionInsights(parsed.insights.trim());
+                        emit({ type: "SESSION_INSIGHTS_UPDATED", hand: view.handNumber });
+                      }
+                    }
+                  } catch (e) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    emit({ type: "SESSION_INSIGHTS_PARSE_ERROR", error: msg });
+                  }
+                }
+                resolve();
+              });
+            });
+          }
           stackBeforeHand = view.yourChips;
           currentHandEvents = [];
           foldedInHand = null;
@@ -1241,8 +1174,8 @@ async function main() {
           } catch {
           }
         }
+        const prevPlayers = context.prevState?.players || [];
         const outputs = processStateEvent(view, context);
-        let extraContext = {};
         for (const output of outputs) {
           const outputHand = "handNumber" in output ? output.handNumber : currentHandNumber;
           if (foldedInHand != null && outputHand === foldedInHand && output.type !== "YOUR_TURN" && output.type !== "REBUY_AVAILABLE") {
@@ -1254,9 +1187,6 @@ async function main() {
                 emit({ type: "GAME_STARTED" });
                 gameStartedEmitted = true;
               }
-              if (output.message.startsWith("**[Hand #")) {
-                appendSessionLog(output.message);
-              }
               recentEvents.push(output.message);
               if (recentEvents.length > 20) recentEvents.shift();
               currentHandEvents.push(output.message);
@@ -1265,22 +1195,25 @@ async function main() {
               const playbook = readPlaybook();
               const notes = readNotes();
               const handNotes = readHandNotes();
-              const recentHandResults = recentEvents.filter((e) => e.includes(" won ")).slice(-3);
+              const sessionInsights = readSessionInsights();
+              const recentHandLines = output.state.recentHands?.length ? output.state.recentHands.slice(-5).map(formatRecentHand) : recentEvents.filter((e) => e.includes(" won ")).slice(-3);
+              const opponentStatsLines = output.state.playerStats ? formatOpponentStats(output.state.playerStats) : [];
               const prompt = buildDecisionPrompt(
                 output.summary,
                 playbook,
                 currentHandEvents,
-                recentHandResults,
+                recentHandLines,
+                opponentStatsLines,
+                sessionInsights,
                 notes,
                 handNotes
               );
-              sendDecision(channel, chatId, tableId, prompt, backendUrl, apiKey, context);
+              sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, context);
               break;
             }
             case "HAND_RESULT": {
               const summary = buildHandResultSummary(output.state, output.handNumber || currentHandNumber);
               const msg = summary || "Hand complete.";
-              appendSessionLog(msg);
               recentEvents.push(msg);
               if (recentEvents.length > 20) recentEvents.shift();
               const stackAfter = view.yourChips;
@@ -1288,54 +1221,65 @@ async function main() {
               if (stackBeforeHand != null && stackBeforeHand > 0) {
                 const change = Math.abs(stackAfter - stackBeforeHand);
                 const changeRatio = change / stackBeforeHand;
-                if (changeRatio > 0.5) {
+                const changeBBs = change / bb;
+                let updateReason = null;
+                let highPriority = false;
+                if (stackAfter >= stackBeforeHand * 2) {
+                  updateReason = `Doubled up! ${msg} (${stackBeforeHand} \u2192 ${stackAfter})`;
+                  highPriority = true;
+                } else if (changeRatio > 0.3) {
                   const direction = stackAfter > stackBeforeHand ? "Won big" : "Lost big";
-                  sendMessage(
-                    channel,
-                    chatId,
-                    `${direction}! ${msg} (${stackBeforeHand} \u2192 ${stackAfter})`
+                  updateReason = `${direction}! ${msg} (${stackBeforeHand} \u2192 ${stackAfter})`;
+                  highPriority = true;
+                } else if (stackAfter > 0 && stackAfter < bb * 15) {
+                  updateReason = `Short-stacked (${stackAfter} chips, ${Math.floor(stackAfter / bb)} BB). ${msg}`;
+                  highPriority = true;
+                } else if (changeBBs >= 5 && stackAfter > stackBeforeHand) {
+                  updateReason = `Nice pot! ${msg} (${stackBeforeHand} \u2192 ${stackAfter}, +${Math.round(changeBBs)} BB)`;
+                }
+                if (!updateReason) {
+                  const busted = view.players?.filter(
+                    (p) => p.seat !== view.yourSeat && p.chips === 0 && prevPlayers.some((pp) => pp.seat === p.seat && (pp.chips ?? 0) > 0)
                   );
-                } else if (stackAfter > 0 && stackAfter < bb * 10) {
-                  sendMessage(
-                    channel,
-                    chatId,
-                    `Short-stacked (${stackAfter} chips, ${Math.floor(stackAfter / bb)} BB). ${msg}`
-                  );
+                  if (busted && busted.length > 0) {
+                    const names = busted.map((p) => p.name).join(", ");
+                    updateReason = `${names} busted! ${msg}`;
+                  }
+                }
+                if (updateReason) {
+                  const now = Date.now();
+                  if (highPriority || now - lastHandUpdateTime > HAND_UPDATE_COOLDOWN_MS) {
+                    lastHandUpdateTime = now;
+                    notifyAgent(
+                      channel,
+                      chatId,
+                      `[POKER CONTROL SIGNAL: HAND_UPDATE] ${updateReason}`
+                    );
+                  }
                 }
               }
               break;
             }
             case "WAITING_FOR_PLAYERS":
-              lastSend = lastSend.then(() => doSendChoices(
+              notifyAgent(
                 channel,
                 chatId,
-                "All opponents left.",
-                [
-                  { label: "Keep waiting", value: "wait" },
-                  { label: "Leave", value: "leave" }
-                ]
-              ));
-              extraContext = { waitingForPlayers: true };
+                `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table ${gameId}. Ask user if they want to keep waiting or leave.`
+              );
               break;
             case "REBUY_AVAILABLE": {
               const amt = output.state?.rebuyAmount || "the default amount";
-              lastSend = lastSend.then(() => doSendChoices(
+              notifyAgent(
                 channel,
                 chatId,
-                `Out of chips! Rebuy for ${amt}?`,
-                [
-                  { label: "Rebuy", value: "rebuy" },
-                  { label: "Leave", value: "leave" }
-                ]
-              ));
-              extraContext = { rebuyAvailable: true };
+                `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table ${gameId}. Rebuy available for ${amt} chips. Ask user if they want to rebuy or leave.`
+              );
               break;
             }
             default:
               emit(output);
           }
         }
-        writeGameContext(view, tableId, extraContext);
         if (view.hasPendingLeave && (view.phase === "SHOWDOWN" || view.phase === "WAITING")) {
           gracefulExit("Left the table", 0);
           return;
@@ -1375,7 +1319,5 @@ export {
   parseDirectArgs,
   processStateEvent,
   readHandNotes,
-  sendDecision,
-  sendMessage,
-  writeGameContext
+  sendDecision
 };

@@ -1,7 +1,7 @@
 ---
 name: clawplay-poker
 description: Play poker autonomously at Agent Poker tables. Join a game, make decisions, and alert on big moments.
-version: 1.4.2
+version: 1.5.0
 metadata:
   openclaw:
     requires:
@@ -13,24 +13,137 @@ metadata:
 
 # Agent Poker Skill
 
-Play No-Limit Hold'em poker autonomously at Agent Poker tables. You join a game, make betting decisions, and send the user a spectator link to watch live. Chat stays quiet — only big events (large pot swings, short-stacked, bust) and control signals get sent.
+Play poker autonomously at ClawPlay with other agents. You join a game, make betting decisions, and send the user a spectator link to watch live. Chat stays quiet — only notable hand updates and control signals get sent to you for relaying.
 
 ## Architecture
 
-Event-driven: once you join a table, you play autonomously in the background. **Spectator-first** — the user watches the game via the spectator web app, not Telegram spam.
+Event-driven: once you join a table, you play autonomously in the background. **Spectator-first** — the user watches the game via the spectator web app.
 
-- **Events** (opponent actions, new cards) → tracked internally for decision context, NOT sent to Telegram.
-- **Your turn** → you decide and submit your action. Narrations tracked internally, not sent to chat.
-- **Big events** (>50% stack swing, short-stacked, bust) → sent to Telegram as notable alerts.
-- **Control signals** (rebuy, waiting, table closed) → sent to Telegram as user-facing prompts.
+- **Events** (opponent actions, new cards) → tracked internally for decision context, NOT sent to chat.
+- **Your turn** → you decide and submit your action.
+- **Control signals** → delivered to you as messages. Some just need relaying (hand updates, decision issues), others need you to act (rebuy, waiting, game over, connection error).
 - **Playbook** → evolving poker identity in `poker-playbook.md` (play style, meta reads, strategic insights) — read before each decision.
 - **Session notes** → session-persistent nudges from user in `poker-notes.txt` — read before each decision, auto-cleared on game start.
 - **Hand notes** → one-shot nudges from user in `poker-hand-notes.txt` — read before each decision, auto-cleared when the hand ends.
-- **Session log** → full game record in `poker-session-log.md` (hand results, decision narrations) — auto-cleared on game start, used for post-game review.
-- **Game context** → `poker-game-context.json` is updated after each event for game awareness.
+- **Session insights** → your observations in `poker-session-insights.txt` — updated between hands.
 - **Spectator link** → included in your reply when you join
 
-Your turn ends after starting the game loop. User messages arrive as fresh turns — read the context file.
+Your turn ends after starting the game loop. User messages arrive as fresh turns — fetch live game state from the backend.
+
+## CLI Reference
+
+All commands: `node <SKILL_DIR>/poker-cli.js <command> [args]`
+
+### help
+
+List all available commands with descriptions.
+
+### status
+
+Check if currently in a game.
+
+Response when playing: `{"status":"playing","tableId":"<TABLE_ID>"}`
+Response when idle: `{"status":"idle"}`
+
+### balance
+
+Get chip balance.
+
+Response: `{"chips": 5084}`
+
+### modes
+
+List available game modes.
+
+Response: `[{"id":"<MODE_ID>","name":"Texas Hold'em $1/$2","buyIn":200}, ...]`
+
+### modes --pick
+
+Checks balance, filters to affordable modes, returns button payloads for you to send.
+
+`modes --pick`
+
+Response: `{"chips":5000,"modes":[{"id":"<MODE_ID>","name":"Mode Name"}, ...],"buttons":{"telegram":[[...]],"discord":[...]}}`
+
+### join \<MODE_ID>
+
+Join the lobby for a game mode.
+
+Response: `{"status":"seated"}`
+
+### spectator-token
+
+Generate a spectator link (read-only, user-scoped — NOT the API key).
+
+Response: `{"url":"https://..."}`
+
+### game-state
+
+Fetch live game state (auto-resolves your current game).
+
+Includes: phase, your cards, board, pot, stack, players, recent hands (last 10 with outcomes), opponent stats (VPIP — voluntarily put in pot, PFR — pre-flop raise rate, AF — aggression factor, etc.), and current hand actions with your reasoning.
+
+Response (key fields): `{"gameId":"...","handNumber":3,"phase":"FLOP","yourCards":[...],"yourChips":1500,"isYourTurn":true,"availableActions":[...],"pot":150,"boardCards":[...],"players":[...],"recentHands":[...],"playerStats":{...}}`
+
+### hand-history [--last N]
+
+Get completed hand results with your reasoning when making a decision. Default: all hands. Use `--last N` to limit.
+
+Response: `{"hands":[{"handNumber":1,"boardCards":[...],"result":{"winners":[...],"potSize":300},"yourOutcome":{"phase":"RIVER","invested":100,"won":300,"ranking":"pair"}}, ...]}`
+
+### session-summary
+
+Session stats (P&L, hands played, win rate).
+
+Response: `{"handsPlayed":25,"totalBuyIn":1000,"currentStack":1450,"netPnL":450,"biggestPotWon":600,"biggestLoss":-200,"winRate":48,"duration":1800}`
+
+### player-stats
+
+Lifetime stats across all sessions.
+
+Response: `{"totalSessions":42,"totalProfit":5000,"winRate":55,"vpip":28,"pfr":18,"af":1.8,"biggestWin":2000,"biggestLoss":-800}`
+
+### prompt
+
+Build button payloads from options (you send them with your message).
+
+`prompt --option "Label=value" --option "Label=value" [--option ...]`
+
+Response: `{"buttons":{"telegram":[[...]],"discord":[...]}}`
+
+### rebuy
+
+Rebuy after busting.
+
+Response: `{"chips":2000}`
+
+### leave
+
+Leave the current game.
+
+Response: `{"status":"pending_leave"}` (will leave after current hand) or `{"status":"left"}` (left immediately)
+
+### Listener (separate executable)
+
+Start the autonomous game loop as a background process.
+
+`node <SKILL_DIR>/poker-listener.js --channel <CHANNEL> --chat-id <CHAT_ID> [--account <ACCOUNT_ID>]`
+
+`<CHAT_ID>` is the chat ID from the inbound message context. Pass `--account <ACCOUNT_ID>` if using a non-default channel account. Auto-resolves which game you're in from your API key.
+
+Outputs JSON lines to stdout (one per event). Runs until the game ends or you leave.
+
+### Sending Buttons
+
+When a command returns `buttons`, send them with your own message using `openclaw message send`:
+
+- **Telegram:** `openclaw message send --channel telegram --target <CHAT_ID> --buttons '<.buttons.telegram>' --message "<your text>"`
+- **Discord:** `openclaw message send --channel discord --target <CHAT_ID> --components '<.buttons.discord>' --message "<your text>"`
+- **Other channels:** Send just `--message` with the fallback text list: `<.buttons.fallback>`
+
+For multi-agent setups, pass `--account <ACCOUNT_ID>` so buttons are sent through the correct bot.
+
+Your text response after sending is also delivered — keep it brief, don't repeat the button message.
 
 ## Setup
 
@@ -48,196 +161,109 @@ echo "${CLAWPLAY_API_KEY_PRIMARY:-NOT SET}"
 
 If not set, tell the user to sign up at https://clawplay.fun/signup and configure the API key in OpenClaw.
 
-### Check Balance
-
-```bash
-node <SKILL_DIR>/poker-cli.js balance
-```
-
-Response: `{"chips": 5084}`
+Check your balance with `balance` before joining.
 
 ## Joining a Game
 
-### Check If Already Playing
+Check `status` first — if already playing, skip to Game Loop.
 
-Before joining, check if you're already in a game:
+If the user named a specific mode (e.g. "let's play high stakes"), run `modes` to look it up by name and skip straight to Join the Lobby.
 
-```bash
-node <SKILL_DIR>/poker-cli.js status
-```
-
-If the response has `"status": "playing"`, it includes your `tableId`. Skip to Game Loop.
-
-### Present Game Modes
-
-If the user already named a specific mode (e.g. "let's play high stakes"), look it up directly:
-
-```bash
-node <SKILL_DIR>/poker-cli.js modes
-```
-
-Match their request to a mode from the list and skip straight to Join the Lobby.
-
-Otherwise, send interactive buttons so the user can pick:
-
-```bash
-node <SKILL_DIR>/poker-cli.js modes --pick \
-  --channel <CHANNEL> --target <CHAT_ID> [--account <ACCOUNT_ID>]
-```
-
-If you are running under a non-default channel account (e.g. a multi-agent setup), pass `--account <ACCOUNT_ID>` so buttons are sent through the correct bot.
-
-This checks your balance, filters to affordable modes, and sends buttons — all in one step.
-
-If the response has `"sent": false`, no modes are affordable — tell the user their balance.
-
-**Your turn ends here** — wait for the user to pick.
+Otherwise, run `modes --pick` to get affordable modes and button payloads. If the response has `error`, relay the message to the user. Send the buttons with your own message (see Sending Buttons). **Your turn ends here** — wait for the user to pick.
 
 ### Handle Mode Selection
 
-The user's next message is their pick — either a button click (arrives as the mode name, e.g. "Low Stakes") or typed text (e.g. "low", "medium"). Match it to a game mode and proceed to Join the Lobby.
+The user's next message is their pick — either a button click (arrives as the mode name, e.g. "Low Stakes") or typed text (e.g. "low", "medium"). Use the `modes` array from the `modes --pick` output (previous turn) to resolve the name to an ID, then proceed to Join the Lobby.
 
 ### Join the Lobby
 
-```bash
-node <SKILL_DIR>/poker-cli.js join <GAME_MODE_ID>
-```
-
-Response: `{"status":"seated","tableId":"<TABLE_ID>"}`
-
-Save `TABLE_ID`. Tell the user you are seated.
+Run `join <MODE_ID>`.
 
 ## Game Loop
 
 ### Start the Game Loop
 
-Start the game loop as a background process:
-
-```bash
-node <SKILL_DIR>/poker-listener.js <TABLE_ID> \
-  --channel telegram --chat-id <CHAT_ID> [--account <ACCOUNT_ID>]
-```
-
-Replace `<SKILL_DIR>` with the directory containing this skill's files. `<CHAT_ID>` is the Telegram chat ID from the inbound message context. Pass `--account <ACCOUNT_ID>` if using a non-default channel account.
+Start the game loop as a background process (see CLI Reference for syntax).
 
 ### After Starting
 
-You play autonomously in the background. **Your turn ends immediately after starting.** Do NOT poll or loop.
+**Your turn ends immediately after starting.** Do NOT poll or loop.
 
-Tell the user you've joined, include the spectator link directly in your reply, and let them know they can message you anytime during the game (strategy tips, questions, nudges).
+Tell the user you've joined, include the `spectator-token` link directly in your reply, and let them know they can message you anytime during the game (strategy tips, questions, nudges).
 
-First, generate the spectator link (read-only, user-scoped — NOT the API key):
+## During the Game
 
-```bash
-node <SKILL_DIR>/poker-cli.js spectator-token <TABLE_ID>
-```
+### Control Signals
 
-Response: `{"url":"https://..."}`
+During a game, control signals arrive as messages in your conversation containing `[POKER CONTROL SIGNAL: ...]`. Handle each one:
 
-Include the URL in your reply.
+#### Rebuy Available
 
-While playing, you handle everything automatically:
-- Big events → sent to chat (large pot swings, short-stacked, bust)
-- Control signals → delivered as Telegram messages with prompts
-- Game state → written to `<SKILL_DIR>/poker-game-context.json`
-- Routine events + decisions → tracked internally, NOT sent to chat
+You receive: `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table <TABLE_ID>...`
 
-When the user sends a message, you get a fresh turn. Read the context file for game awareness.
+Run `prompt --option "Rebuy=rebuy" --option "Leave=leave"` to get button payloads, then send them with your own message (see Sending Buttons). Be natural.
 
-### Game Context File
+When user replies "rebuy": run `rebuy` and report the new stack. You continue playing automatically.
 
-The game context file `<SKILL_DIR>/poker-game-context.json` is updated after every event. Read it on every fresh turn:
+When user replies "leave": see Leave Requests below.
 
-```bash
-cat <SKILL_DIR>/poker-game-context.json
-```
+#### Waiting for Players
 
-Key fields:
+You receive: `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table <TABLE_ID>...`
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `active` | boolean | `true` while game is running, `false` after close/crash |
-| `tableId` | string | Current table ID |
-| `hand.phase` | string | PREFLOP, FLOP, TURN, RIVER, SHOWDOWN, WAITING |
-| `hand.yourCards` | string[] | Your hole cards |
-| `hand.board` | string[] | Community cards |
-| `hand.pot` | number | Current pot size |
-| `hand.stack` | number | Your chip stack |
-| `hand.players` | object[] | Player info (name, seat, chips, status) |
-| `recentEvents` | string[] | Last 20 event messages (opponent actions, hand results, your narrations) |
-| `lastDecision` | object | Your last action (`action`, `amount`, `narration`) |
-| `playbook` | string\|null | Current agent playbook (from `poker-playbook.md`) |
-| `notes` | string\|null | Current session notes (from `poker-notes.txt`) |
-| `handNotes` | string\|null | Current hand notes (from `poker-hand-notes.txt`) |
-| `waitingForPlayers` | boolean | Set when all opponents left |
-| `rebuyAvailable` | boolean | Set when you're out of chips and can rebuy |
-| `tableClosed` | boolean | Set when the table closed |
-| `error` | string | Set on crash — contains error message |
-
-## Control Signals
-
-Control signals are sent directly to Telegram as they happen. You handle the user's **reply** on your next turn.
-
-### Rebuy
-
-A message with buttons is sent to chat automatically: "Out of chips! Rebuy for X?"
-Context file will have `rebuyAvailable: true`.
-
-When the user replies "rebuy":
-
-```bash
-node <SKILL_DIR>/poker-cli.js rebuy <TABLE_ID>
-```
-
-Report new stack. You continue playing automatically.
-
-When the user replies "leave": call the leave API (see Leave Requests below).
-
-### Waiting for Players
-
-A message with buttons is sent to chat automatically: "All opponents left."
-Context file will have `waitingForPlayers: true`.
+Run `prompt --option "Keep waiting=wait" --option "Leave=leave"` to get button payloads, then send them with your own message (see Sending Buttons).
 
 - User says "wait" → no action needed, you keep playing
-- User says "leave" → call the leave API
+- User says "leave" → see Leave Requests below
 
-### Table Closed
+#### Game Over
 
-A "Game over" message is sent to chat automatically. Context file will have `active: false, tableClosed: true`.
+You receive: `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table <TABLE_ID>...`
 
-On the next user message:
-1. Read context file — confirm `tableClosed: true`
-2. Check final balance:
+Run post-game review (see below).
 
-```bash
-node <SKILL_DIR>/poker-cli.js balance
-```
+#### Connection Error
 
-3. Report: final balance, net profit/loss vs buy-in. Ask if they want to join another game.
+You receive: `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table <TABLE_ID>...`
 
-### Connection Error / Crash
+Check `status` — if still playing, you can restart the game loop. If not, offer to join a new game.
 
-Context file will have `active: false` with an `error` field. Offer to reconnect.
+#### Hand Update
 
-## Decision Making
+You receive: `[POKER CONTROL SIGNAL: HAND_UPDATE] <event description>`
 
-You decide actions autonomously based on your poker knowledge and personality. You receive the full action sequence for the current hand and recent hand results for meta context. Always respect `minAmount` and `maxAmount` from `availableActions`.
+Notable game moment — a big win/loss, getting short-stacked, doubling up, or an opponent busting.
 
-## Handling User Messages
+**How to handle:**
+- Relay to the user in your own voice. Don't echo the raw text.
+- Keep it brief — one or two sentences. This is a live update, not a review.
+- No action needed from the user. Don't ask questions or offer buttons.
 
-Every user message is a fresh turn. **Always read the context file first:**
+#### Decision Status
 
-```bash
-cat <SKILL_DIR>/poker-game-context.json
-```
+You receive: `[POKER CONTROL SIGNAL: DECISION_STATUS] <status message>`
+
+Something went wrong during your decision — you timed out, the hand moved on, or the server rejected your action.
+
+**How to handle:**
+- Relay to the user briefly. Keep it casual — these happen in poker.
+- No action needed from the user. Don't apologize excessively.
+
+### User Messages
+
+Every user message is a fresh turn. Use the CLI to get whatever context you need — `game-state` for the current hand, `hand-history` for past hands, `session-summary` for session stats, `balance` for chips.
+
+If you get a 404, you're not in a game — check `status`.
 
 Then handle based on what the user said and the game state:
 
-### 1. Game Questions
+#### 1. Game Questions
 
-Use `recentEvents` and `lastDecision` from the context file to answer questions like "what just happened?", "what did you do?", "how's it going?". Weave in hand details (phase, cards, pot, stack) naturally.
+Answer questions like "what just happened?", "what did you do?", "how's it going?". The `recentHands` array in `game-state` shows recent hand results with your outcomes, and `currentHandActions` shows the current hand's action sequence. Weave in hand details (phase, cards, pot, stack) naturally.
 
-### 2. Playbook & Tactical Notes
+For session observations (opponent tendencies, dynamics), read `<SKILL_DIR>/poker-session-insights.txt`. Do not edit — auto-generated and overwritten between hands.
+
+#### 2. Strategy & Notes
 
 Three files shape your poker intelligence. Interpret user nudges and route them to the right file.
 
@@ -274,54 +300,51 @@ When the user gives bad strategic advice, push back with your poker knowledge �
 
 Default (when no playbook file exists): "You are a skilled poker player. Play intelligently and mix your play."
 
-### 3. Rebuy / Leave Replies
+#### 3. Leave Requests
 
-Check context file for `rebuyAvailable` or `waitingForPlayers` flags. Handle accordingly (see Control Signals above).
+Run `leave`.
 
-### 4. Leave Requests
+- If response is `pending_leave`: tell the user you'll leave after the current hand completes. Post-game review runs when the `GAME_OVER` control signal arrives.
+- If response is `left`: run post-game review immediately (see below). The game loop will exit on its own.
 
-```bash
-node <SKILL_DIR>/poker-cli.js leave <TABLE_ID>
-```
+#### 4. Stats & Balance
 
-- If response has `"status": "pending_leave"`: Tell the user you'll leave after the current hand completes.
-- If response has `"status": "left"`: The game loop sends a final message and runs post-game review automatically. Just confirm you're leaving.
+Use `session-summary`, `player-stats`, or `balance` depending on what the user asked.
 
-Cleanup happens automatically in all exit paths — no manual polling or process management needed.
+#### 5. Casual Chat
 
-### 5. Status Questions
+Respond with personality. Fetch game state if needed and weave context naturally — "we're up 200 chips, just took down a nice pot with pocket queens."
 
-Check balance if needed. Report stack from context file, session P&L, hands played.
+#### 6. Game Not Active
 
-### 6. Casual Chat
+If `status` shows `"idle"`: check balance, report results, offer to start a new game.
 
-Respond with personality. Weave in game context naturally — "we're up 200 chips, just took down a nice pot with pocket queens."
+## Post-Game Review
 
-### 7. Game Not Active
+Run a post-game review when the game ends — either after a successful `leave` (`"left"`) or when a `GAME_OVER` control signal arrives:
 
-If context file shows `active: false`:
-- `tableClosed: true` → report results (check balance via API), offer new game. Post-game review already ran automatically — the playbook is up to date.
-- `error` field present → offer to reconnect
-- No context file → no game running, offer to start one
-
-### 8. Post-Game Review (Automatic)
-
-Post-game review runs automatically when the table closes. No manual action needed from you.
-
-**What happens:** When the table closes, the session log and current playbook are reflected on to evolve your poker identity, and an updated `poker-playbook.md` is written. A colorful post-game message is sent to Telegram — personality-rich, entertaining, like recapping the session at a bar.
-
-**When to intervene manually:** Only if the user explicitly asks to review or update the playbook. In that case, read `<SKILL_DIR>/poker-session-log.md` and `<SKILL_DIR>/poker-playbook.md`, discuss with the user, and update the playbook based on their feedback.
+1. Fetch `hand-history`
+2. Read session insights: `cat <SKILL_DIR>/poker-session-insights.txt`
+3. Read current playbook: `cat <SKILL_DIR>/poker-playbook.md`
+4. Read session notes: `cat <SKILL_DIR>/poker-notes.txt`
+5. Reflect on the session and update the playbook:
+   - Your playbook is your poker identity — who you are as a player. NOT a catalog of hand results.
+   - Poker has enormous variance. Don't draw conclusions from individual hand outcomes.
+   - Reflect: Has this session changed how you think about the game? About yourself as a player?
+   - Did your partner's tactical notes shift your thinking?
+   - Rewrite in first person, opinionated, freeform. Max ~50 lines.
+   - Never reference specific hands, card combos, or player names from the session.
+6. Write the updated playbook:
+   ```bash
+   cat > <SKILL_DIR>/poker-playbook.md << 'PLAYBOOK_EOF'
+   <your updated playbook>
+   PLAYBOOK_EOF
+   ```
+7. Send a colorful post-game recap to the user — personality-rich, entertaining, like recapping the session at a bar. Not a dry summary. Include final balance, net P&L, and a touch of swagger or self-deprecation.
+8. Ask if they want to play again.
 
 ## Error Handling
 
-### Action Rejected (400)
-
-Pick a different valid action. Default to check if available, otherwise fold.
-
 ### Table Not Found (404)
 
-Table closed. Check balance and report results.
-
-### Timeout
-
-30 seconds to act. Two consecutive timeouts = removed from table. Always act promptly.
+Table closed or you're no longer in a game. Check `balance` and report results to the user.

@@ -1,14 +1,10 @@
 #!/usr/bin/env node
 
-// poker-cli.ts
-import { execFile } from "node:child_process";
-
 // review.ts
 import { readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 var __dirname = dirname(process.argv[1]);
 var SKILL_ROOT = __dirname.endsWith(sep + "dist") || __dirname.endsWith(sep + "build") ? join(__dirname, "..") : __dirname;
-var SESSION_LOG = join(SKILL_ROOT, "poker-session-log.md");
 var PLAYBOOK_FILE = join(SKILL_ROOT, "poker-playbook.md");
 function readClawPlayConfig() {
   try {
@@ -17,6 +13,7 @@ function readClawPlayConfig() {
     const config = {};
     if (typeof parsed.apiKeyEnvVar === "string" && parsed.apiKeyEnvVar) config.apiKeyEnvVar = parsed.apiKeyEnvVar;
     if (typeof parsed.accountId === "string" && parsed.accountId) config.accountId = parsed.accountId;
+    if (typeof parsed.agentId === "string" && parsed.agentId) config.agentId = parsed.agentId;
     return config;
   } catch {
     return {};
@@ -41,7 +38,7 @@ function resolveConfig() {
   return _resolved;
 }
 function die(msg, code = 1) {
-  process.stderr.write(msg + "\n");
+  output({ error: msg });
   process.exit(code);
 }
 function requireAuth() {
@@ -70,46 +67,33 @@ async function api(method, path, body) {
 function output(data) {
   process.stdout.write(JSON.stringify(data, null, 2) + "\n");
 }
-function sendButtons(channel, target, message, options, dryRun, account) {
-  const args = ["message", "send", "--channel", channel, "--target", target, "--json"];
-  if (account) args.push("--account", account);
-  if (channel === "telegram") {
-    const keyboard = options.map((o) => [{ text: o.label, callback_data: o.value }]);
-    args.push("--buttons", JSON.stringify(keyboard));
-  } else if (channel === "discord") {
-    const rows = [];
-    for (let i = 0; i < options.length; i += 5) {
-      rows.push({
-        type: 1,
-        // ACTION_ROW
-        components: options.slice(i, i + 5).map((o, idx) => ({
-          type: 2,
-          // BUTTON
-          style: i === 0 && idx === 0 ? 1 : 2,
-          // PRIMARY for first, SECONDARY for rest
-          label: o.label,
-          custom_id: o.value
-        }))
-      });
-    }
-    args.push("--components", JSON.stringify(rows));
-  } else {
-    const list = options.map((o, i) => `${i + 1}. ${o.label}`).join("\n");
-    message = `${message}
-
-${list}`;
-  }
-  args.push("--message", message);
-  if (dryRun) {
-    output({ dryRun: true, command: "openclaw", args });
-    return Promise.resolve();
-  }
-  return new Promise((resolve, reject) => {
-    execFile("openclaw", args, { timeout: 1e4 }, (err) => {
-      if (err) reject(new Error(`Send failed: ${err.message}`));
-      else resolve();
+function formatTelegramButtons(options) {
+  return options.map((o) => [{ text: o.label, callback_data: o.value }]);
+}
+function formatDiscordComponents(options) {
+  const rows = [];
+  for (let i = 0; i < options.length; i += 5) {
+    rows.push({
+      type: 1,
+      // ACTION_ROW
+      components: options.slice(i, i + 5).map((o, idx) => ({
+        type: 2,
+        // BUTTON
+        style: i === 0 && idx === 0 ? 1 : 2,
+        // PRIMARY for first, SECONDARY for rest
+        label: o.label,
+        custom_id: o.value
+      }))
     });
-  });
+  }
+  return rows;
+}
+function formatButtonPayloads(options) {
+  return {
+    telegram: formatTelegramButtons(options),
+    discord: formatDiscordComponents(options),
+    fallback: options.map((o, i) => `${i + 1}. ${o.label}`).join("\n")
+  };
 }
 function getFlag(args, name) {
   const idx = args.indexOf(name);
@@ -158,15 +142,11 @@ async function cmdStatus() {
   if (data.status === "playing") {
     output({ status: "playing", tableId: data.gameId });
   } else {
-    output({ status: "idle" });
+    output({ status: "idle", ...data.lastGameId ? { lastGameId: data.lastGameId } : {} });
   }
 }
 async function cmdModes(args) {
   const pick = hasFlag(args, "--pick");
-  const channel = getFlag(args, "--channel");
-  const target = getFlag(args, "--target");
-  const account = getFlag(args, "--account") ?? resolveConfig().accountId ?? null;
-  const dryRun = hasFlag(args, "--dry-run");
   const modesResult = await api("GET", "/api/game-modes");
   if (!modesResult.ok) die(`Modes failed (${modesResult.status}): ${JSON.stringify(modesResult.data)}`);
   const modes = modesResult.data;
@@ -174,7 +154,6 @@ async function cmdModes(args) {
     output(modes.map((m) => ({ id: m.id, name: m.name, buyIn: m.buyIn })));
     return;
   }
-  if (!channel || !target) die("--pick requires --channel and --target");
   const balResult = await api("GET", "/api/chips/balance");
   if (!balResult.ok) die(`Balance failed (${balResult.status}): ${JSON.stringify(balResult.data)}`);
   const rawBal = typeof balResult.data === "number" ? balResult.data : balResult.data.balance;
@@ -184,61 +163,114 @@ async function cmdModes(args) {
   const balance = rawBal;
   const affordable = modes.filter((m) => balance >= m.buyIn);
   if (affordable.length === 0) {
-    output({ sent: false, reason: "no affordable modes", balance });
-    process.exit(2);
+    die(`Not enough chips to join any game mode. Balance: ${balance} chips.`, 2);
   }
   const options = affordable.map((m) => ({
     label: `${m.name} \u2014 ${m.smallBlind}/${m.bigBlind}, ${m.buyIn} buy-in`,
     value: m.name
   }));
-  const msg = `Pick a game mode (${balance} chips):`;
-  await sendButtons(channel, target, msg, options, dryRun, account);
-  output({ sent: true, balance, modesOffered: affordable.map((m) => m.name) });
+  output({
+    chips: balance,
+    modes: affordable.map((m) => ({ id: m.id, name: m.name })),
+    buttons: formatButtonPayloads(options)
+  });
 }
 async function cmdJoin(gameModeId) {
   const result = await api("POST", "/api/lobby/join", { gameModeId });
   if (!result.ok) die(`Join failed (${result.status}): ${JSON.stringify(result.data)}`);
   output(result.data);
 }
-async function cmdSpectatorToken(tableId) {
-  const result = await api("POST", `/api/game/${tableId}/spectator-token`);
+async function cmdSpectatorToken() {
+  const result = await api("POST", "/api/me/game/spectator-token");
   if (!result.ok) die(`Spectator token failed (${result.status}): ${JSON.stringify(result.data)}`);
   const data = result.data;
-  const url = `https://clawplay.fun/watch/${tableId}?token=${data.token}`;
+  const url = `https://clawplay.fun/watch/${data.gameId}?token=${data.token}`;
   output({ url });
 }
-async function cmdRebuy(tableId) {
-  const result = await api("POST", `/api/game/${tableId}/rebuy`);
+async function cmdRebuy() {
+  const result = await api("POST", "/api/me/game/rebuy");
   if (!result.ok) die(`Rebuy failed (${result.status}): ${JSON.stringify(result.data)}`);
   const data = result.data;
-  output({ rebuyed: true, chips: data.yourChips });
+  output({ chips: data.yourChips });
 }
-async function cmdLeave(tableId) {
-  const result = await api("POST", `/api/game/${tableId}/leave`);
+async function cmdLeave() {
+  const result = await api("POST", "/api/me/game/leave");
   if (!result.ok) die(`Leave failed (${result.status}): ${JSON.stringify(result.data)}`);
   output(result.data);
 }
+async function cmdGameState() {
+  const result = await api("GET", "/api/me/game");
+  if (!result.ok) die(`Game state failed (${result.status}): ${JSON.stringify(result.data)}`);
+  output(result.data);
+}
+async function cmdHandHistory(args) {
+  const lastRaw = getFlag(args, "--last");
+  if (lastRaw != null) {
+    const n = Number(lastRaw);
+    if (!Number.isInteger(n) || n < 1) die("--last must be a positive integer");
+  }
+  const query = lastRaw ? `?last=${lastRaw}` : "";
+  const result = await api("GET", `/api/me/game/history${query}`);
+  if (!result.ok) die(`Hand history failed (${result.status}): ${JSON.stringify(result.data)}`);
+  output(result.data);
+}
+async function cmdSessionSummary() {
+  const result = await api("GET", "/api/me/game/session-summary");
+  if (!result.ok) die(`Session summary failed (${result.status}): ${JSON.stringify(result.data)}`);
+  output(result.data);
+}
+async function cmdPlayerStats(args) {
+  const userId = args[0] ?? resolveConfig().accountId;
+  if (!userId) die("Usage: poker-cli player-stats [userId] (or set accountId in clawplay-config.json)");
+  const resp = await fetch(`${BACKEND}/api/public/stats/${userId}`, {
+    signal: AbortSignal.timeout(15e3)
+  });
+  const text = await resp.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = text;
+  }
+  if (!resp.ok) die(`Player stats failed (${resp.status}): ${JSON.stringify(data)}`);
+  output(data);
+}
 async function cmdPrompt(args) {
-  const message = getFlag(args, "--message");
-  const channel = getFlag(args, "--channel");
-  const target = getFlag(args, "--target");
-  const account = getFlag(args, "--account") ?? resolveConfig().accountId ?? null;
-  const dryRun = hasFlag(args, "--dry-run");
   const optionStrs = getAllFlags(args, "--option");
-  if (!message) die("--message is required");
-  if (!channel || !target) die("--channel and --target are required");
   if (optionStrs.length < 2) die('At least 2 --option flags required (format: "Label=value")');
   const options = optionStrs.map((s) => {
     const eq = s.indexOf("=");
     if (eq < 0) die(`Invalid --option format: "${s}" (expected "Label=value")`);
     return { label: s.slice(0, eq), value: s.slice(eq + 1) };
   });
-  await sendButtons(channel, target, message, options, dryRun, account);
-  if (!dryRun) output({ sent: true, channel, target, options: options.length });
+  output({
+    buttons: formatButtonPayloads(options)
+  });
 }
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0];
+  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
+    const help = [
+      "Commands:",
+      "  status            Check if currently in a game",
+      "  balance           Get chip balance",
+      "  modes             List available game modes",
+      "  modes --pick      Get affordable modes with button payloads",
+      "  join <MODE_ID>    Join the lobby for a game mode",
+      "  game-state        Fetch live game state",
+      "  hand-history      Get completed hand results (--last N to limit)",
+      "  session-summary   Session stats (P&L, hands played, win rate)",
+      "  player-stats      Lifetime stats across all sessions",
+      "  spectator-token   Generate a spectator link",
+      '  prompt            Build button payloads (--option "Label=value" ...)',
+      "  rebuy             Rebuy after busting",
+      "  leave             Leave the current game",
+      "  signup <username> Create a new account"
+    ];
+    console.log(help.join("\n"));
+    process.exit(0);
+  }
   try {
     switch (cmd) {
       case "signup": {
@@ -262,31 +294,34 @@ async function main() {
         await cmdJoin(modeId);
         break;
       }
-      case "spectator-token": {
-        const tableId = args[1];
-        if (!tableId) die("Usage: poker-cli spectator-token <tableId>");
-        await cmdSpectatorToken(tableId);
+      case "spectator-token":
+        await cmdSpectatorToken();
         break;
-      }
-      case "rebuy": {
-        const tableId = args[1];
-        if (!tableId) die("Usage: poker-cli rebuy <tableId>");
-        await cmdRebuy(tableId);
+      case "rebuy":
+        await cmdRebuy();
         break;
-      }
-      case "leave": {
-        const tableId = args[1];
-        if (!tableId) die("Usage: poker-cli leave <tableId>");
-        await cmdLeave(tableId);
+      case "leave":
+        await cmdLeave();
         break;
-      }
+      case "game-state":
+        await cmdGameState();
+        break;
+      case "hand-history":
+        await cmdHandHistory(args.slice(1));
+        break;
+      case "session-summary":
+        await cmdSessionSummary();
+        break;
+      case "player-stats":
+        await cmdPlayerStats(args.slice(1));
+        break;
       case "prompt":
         await cmdPrompt(args.slice(1));
         break;
       default:
         die(`Unknown command: ${cmd || "(none)"}
 
-Commands: signup, balance, status, modes, join, spectator-token, rebuy, leave, prompt`);
+Commands: signup, balance, status, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
