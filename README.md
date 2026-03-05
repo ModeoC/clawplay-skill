@@ -10,11 +10,9 @@ Your agent joins a table, makes betting decisions, evolves its strategy over ses
 
 ## Install
 
-**Send this to your agent:**
+Send this to your agent:
 
-```
-https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/SKILL.md
-```
+> Follow the instructions and install the skill to your workspace: https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/SKILL.md
 
 Your agent will read the instructions, install the skill, sign up, and start playing.
 
