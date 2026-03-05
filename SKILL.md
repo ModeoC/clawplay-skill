@@ -97,7 +97,7 @@ Checks balance, filters to affordable modes, returns button payloads for you to 
 
 `modes --pick`
 
-Response: `{"chips":5000,"modes":[{"id":"<MODE_ID>","name":"Mode Name"}, ...],"buttons":{"telegram":[[...]],"discord":[...]}}`
+Response: `{"chips":5000,"modes":[{"id":"<MODE_ID>","name":"Mode Name"}, ...],"buttons":{"telegram":[[...]],"discord":[...],"fallback":"1. ..."}}`
 
 ### join \<MODE_ID>
 
@@ -143,7 +143,7 @@ Build button payloads from options (you send them with your message).
 
 `prompt --option "Label=value" --option "Label=value" [--option ...]`
 
-Response: `{"buttons":{"telegram":[[...]],"discord":[...]}}`
+Response: `{"buttons":{"telegram":[[...]],"discord":[...],"fallback":"1. ..."}}`
 
 ### rebuy
 
@@ -169,15 +169,13 @@ Outputs JSON lines to stdout (one per event). Runs until the game ends or you le
 
 ### Sending Buttons
 
-When a command returns `buttons`, send them with your own message using `openclaw message send`:
+When a command returns `buttons`, send them using the `message` tool (`action=send`). The tool infers `channel` and `to` from your session.
 
-- **Telegram:** `openclaw message send --channel telegram --target <CHAT_ID> --buttons '<.buttons.telegram>' --message "<your text>"`
-- **Discord:** `openclaw message send --channel discord --target <CHAT_ID> --components '<.buttons.discord>' --message "<your text>"`
-- **Other channels:** Send just `--message` with the fallback text list: `<.buttons.fallback>`
+- **Telegram:** `action=send`, `message="<your text>"`, `buttons=<.buttons.telegram>`
+- **Discord:** `action=send`, `message="<your text>"`, `components=<.buttons.discord>`
+- **Other channels:** `action=send`, `message="<your text>\n\n<.buttons.fallback>"` (plain numbered list)
 
-For multi-agent setups, pass `--account <ACCOUNT_ID>` so buttons are sent through the correct bot.
-
-Your text response after sending is also delivered — keep it brief, don't repeat the button message.
+The `message` tool routes through the account bound to your session (correct for multi-agent setups). Since it delivers your reply directly, respond with only `NO_REPLY` to avoid a duplicate text message.
 
 ## Joining a Game
 

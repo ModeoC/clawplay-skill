@@ -71,22 +71,17 @@ function formatTelegramButtons(options) {
   return options.map((o) => [{ text: o.label, callback_data: o.value }]);
 }
 function formatDiscordComponents(options) {
-  const rows = [];
+  const blocks = [];
   for (let i = 0; i < options.length; i += 5) {
-    rows.push({
-      type: 1,
-      // ACTION_ROW
-      components: options.slice(i, i + 5).map((o, idx) => ({
-        type: 2,
-        // BUTTON
-        style: i === 0 && idx === 0 ? 1 : 2,
-        // PRIMARY for first, SECONDARY for rest
+    blocks.push({
+      type: "actions",
+      buttons: options.slice(i, i + 5).map((o, idx) => ({
         label: o.label,
-        custom_id: o.value
+        style: i === 0 && idx === 0 ? "primary" : "secondary"
       }))
     });
   }
-  return rows;
+  return { blocks };
 }
 function formatButtonPayloads(options) {
   return {
