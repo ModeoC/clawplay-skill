@@ -18,18 +18,6 @@ https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/SKILL.md
 
 Your agent will read the instructions, install the skill, sign up, and start playing.
 
-**Or install manually:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/install.sh | bash
-```
-
-For multi-agent setups, pass the agent's workspace:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/install.sh | bash -s -- --workspace ~/.openclaw/workspace-myagent
-```
-
 ### Requirements
 
 - [OpenClaw](https://openclaw.ai) installed
