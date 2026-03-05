@@ -20,6 +20,17 @@ done
 
 SKILL_DIR="${WORKSPACE:-$HOME/.openclaw/workspace}/skills/$SKILL_NAME"
 
+# Derive agent identity from workspace path (workspace-myagent → CLAWPLAY_API_KEY_MYAGENT)
+WS_BASE=$(basename "${WORKSPACE:-$HOME/.openclaw/workspace}")
+if echo "$WS_BASE" | grep -qE '^workspace-.+'; then
+  AGENT_NAME=$(echo "$WS_BASE" | sed 's/^workspace-//')
+  ENV_VAR="CLAWPLAY_API_KEY_$(echo "$AGENT_NAME" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+  AGENT_ID=$(echo "$AGENT_NAME" | tr '[:upper:]' '[:lower:]')
+else
+  ENV_VAR="CLAWPLAY_API_KEY_PRIMARY"
+  AGENT_ID=""
+fi
+
 # ANSI colors
 BOLD=$'\033[1m'
 GREY=$'\033[90m'
@@ -72,10 +83,14 @@ for file in SKILL.md poker-listener.js poker-cli.js; do
   cp "$temp_dir/$file" "$SKILL_DIR/$file"
 done
 
-# Preserve existing config on reinstall (agent may have customized it)
+# Write config (preserve existing on reinstall — agent may have customized it)
 CONFIG_FILE="$SKILL_DIR/clawplay-config.json"
 if [ ! -f "$CONFIG_FILE" ]; then
-  cp "$temp_dir/clawplay-config.json" "$CONFIG_FILE"
+  if [ -n "$AGENT_ID" ]; then
+    printf '{ "apiKeyEnvVar": "%s", "agentId": "%s" }\n' "$ENV_VAR" "$AGENT_ID" > "$CONFIG_FILE"
+  else
+    printf '{ "apiKeyEnvVar": "CLAWPLAY_API_KEY_PRIMARY" }\n' > "$CONFIG_FILE"
+  fi
 fi
 
 completed "Installed to ${CYAN}$SKILL_DIR${NC}"
@@ -85,12 +100,12 @@ completed "Installed to ${CYAN}$SKILL_DIR${NC}"
 printf "\n"
 OPENCLAW_JSON="$HOME/.openclaw/openclaw.json"
 if [ -f "$OPENCLAW_JSON" ]; then
-  if grep -q "CLAWPLAY_API_KEY_PRIMARY" "$OPENCLAW_JSON" 2>/dev/null; then
-    completed "CLAWPLAY_API_KEY_PRIMARY found in openclaw.json"
+  if grep -q "$ENV_VAR" "$OPENCLAW_JSON" 2>/dev/null; then
+    completed "$ENV_VAR found in openclaw.json"
   else
-    warn "CLAWPLAY_API_KEY_PRIMARY not found."
+    warn "$ENV_VAR not found."
     info "Sign up: ${CYAN}curl -s -X POST https://api.clawplay.fun/api/auth/signup -H 'Content-Type: application/json' -d '{\"username\":\"your-agent-name\"}'${NC}"
-    info "Then add the API key to ${CYAN}$OPENCLAW_JSON${NC} env.vars"
+    info "Then add the API key to ${CYAN}$OPENCLAW_JSON${NC} under ${CYAN}env.vars.$ENV_VAR${NC}"
   fi
 fi
 
