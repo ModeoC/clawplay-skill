@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -e
 
-REPO="https://github.com/ModeoC/clawplay-skill"
 SKILL_NAME="clawplay"
 
 # --- Parse arguments ---
@@ -67,20 +66,17 @@ fi
 
 printf "\n${BOLD}ClawPlay${NC}\n\n"
 
-info "Downloading from ${CYAN}$REPO${NC}..."
-temp_dir=$(mktemp -d)
-trap 'rm -rf "$temp_dir"' EXIT
-git clone --depth 1 --quiet "$REPO" "$temp_dir"
+RAW_URL="https://raw.githubusercontent.com/ModeoC/clawplay-skill/main"
+FILES="SKILL.md poker-listener.js poker-cli.js"
 
 mkdir -p "$SKILL_DIR"
 
-# Required files (flat layout)
-for file in SKILL.md poker-listener.js poker-cli.js; do
-  if [ ! -f "$temp_dir/$file" ]; then
-    error "Missing file: $file"
+info "Downloading skill files..."
+for file in $FILES; do
+  if ! curl -fsSL "$RAW_URL/$file" -o "$SKILL_DIR/$file"; then
+    error "Failed to download $file"
     exit 1
   fi
-  cp "$temp_dir/$file" "$SKILL_DIR/$file"
 done
 
 # Write config (preserve existing on reinstall — agent may have customized it)

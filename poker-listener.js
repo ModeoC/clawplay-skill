@@ -403,7 +403,7 @@ var init_dist2 = __esm({
 
 // poker-listener.ts
 import { execFile } from "node:child_process";
-import { readFileSync as readFileSync2, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync, unlinkSync, createWriteStream } from "node:fs";
 import { join as join2 } from "node:path";
 
 // card-format.ts
@@ -534,11 +534,20 @@ function readNotes() {
   }
 }
 
-// poker-listener.ts
-var ACTIVE_PHASES = /* @__PURE__ */ new Set(["PREFLOP", "FLOP", "TURN", "RIVER"]);
-function handSessionId(gameId, handNumber) {
-  return `poker-${gameId}-h${handNumber}`;
-}
+// prompts.ts
+var WARMUP_MESSAGE = "(system: session warmup \u2014 no action needed)";
+var controlSignals = {
+  decisionTimedOut: () => `[POKER CONTROL SIGNAL: DECISION_STATUS] Timed out \u2014 the hand moved on before I could decide.`,
+  decisionAutoFolded: () => `[POKER CONTROL SIGNAL: DECISION_STATUS] Decision timed out \u2014 auto-folded.`,
+  decisionStaleHand: (action) => `[POKER CONTROL SIGNAL: DECISION_STATUS] Hand moved on while deciding \u2014 skipped ${action}.`,
+  actionRejected: (status, reason) => `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${status}): ${reason}`,
+  actionRejectedNoReason: (status) => `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${status}) \u2014 could not read reason.`,
+  gameOver: (gameId, reason, finalStack) => `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table ${gameId}. Reason: ${reason}. Final stack: ${finalStack}. Run post-game review per SKILL.md instructions.`,
+  connectionError: (gameId, reason, finalStack) => `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}. Offer to check status or reconnect.`,
+  handUpdate: (msg) => `[POKER CONTROL SIGNAL: HAND_UPDATE] ${msg}`,
+  waitingForPlayers: (gameId) => `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table ${gameId}. Ask user if they want to keep waiting or leave.`,
+  rebuyAvailable: (gameId, amount) => `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table ${gameId}. Rebuy available for ${amount} chips. Ask user if they want to rebuy or leave.`
+};
 function buildSummary(view) {
   const cards = view.yourCards?.length ? formatCards(view.yourCards) : "??";
   const board = view.boardCards?.length ? formatCards(view.boardCards) : "";
@@ -561,6 +570,135 @@ function buildHandResultSummary(state, handNumber) {
   const pot = result.potResults?.[0]?.amount || 0;
   const myStack = result.players?.find((p) => p.seat === state.yourSeat)?.chips || state.yourChips;
   return `${hdr} ${winners.join(", ")} won ${pot}. Stack: ${myStack}.`;
+}
+function formatRecentHand(hand) {
+  const num = hand.handNumber;
+  const outcome = hand.yourOutcome;
+  if (!outcome) return `#${num}: (no outcome data)`;
+  const winnerNames = hand.result.winners.map((w) => w.name).join(", ");
+  const pot = hand.result.potSize;
+  const board = hand.boardCards.length > 0 ? formatCards(hand.boardCards) : "";
+  if (outcome.action === "folded") {
+    const phase = outcome.phase ? ` on ${outcome.phase.toLowerCase()}` : " preflop";
+    return `#${num}: You folded${phase}. ${winnerNames} won ${pot}${pot <= hand.result.potSize * 0.5 ? " uncontested" : ""}.`;
+  }
+  if (outcome.action === "won") {
+    const showdownHands = hand.result.showdownHands;
+    if (showdownHands && showdownHands.length > 0) {
+      const myHand2 = outcome.holeCards ? formatCards(outcome.holeCards) : "??";
+      const ranking2 = outcome.handRanking || "unknown";
+      const losers = showdownHands.filter((sh) => !hand.result.winners.some((w) => w.name === sh.name)).map((sh) => `${sh.name}: ${formatCards(sh.holeCards)} (${sh.handRanking || "?"})`).join(", ");
+      return `#${num}: Showdown \u2014 You won ${pot} with ${myHand2} (${ranking2}).${losers ? ` ${losers} lost.` : ""} Board: ${board}`;
+    }
+    return `#${num}: You won ${pot} uncontested.`;
+  }
+  const myHand = outcome.holeCards ? formatCards(outcome.holeCards) : "??";
+  const ranking = outcome.handRanking || "unknown";
+  const invested = outcome.invested ?? 0;
+  const showdownWinner = hand.result.showdownHands?.find((sh) => hand.result.winners.some((w) => w.name === sh.name));
+  const winnerInfo = showdownWinner ? `${winnerNames} won ${pot} with ${formatCards(showdownWinner.holeCards)} (${showdownWinner.handRanking || "?"}). ` : `${winnerNames} won ${pot}. `;
+  return `#${num}: Showdown \u2014 ${winnerInfo}You lost ${invested} with ${myHand} (${ranking}). Board: ${board}`;
+}
+function formatOpponentStats(stats) {
+  const lines = [];
+  for (const [name, s] of Object.entries(stats)) {
+    const archetype = s.handsPlayed < 10 ? "(small sample)" : `${s.vpip >= 30 ? "Loose" : "Tight"}-${s.af >= 1.2 ? "aggressive" : "passive"}`;
+    lines.push(
+      `${name} (${s.handsPlayed} hands): VPIP ${s.vpip}% \xB7 PFR ${s.pfr}% \xB7 3-bet ${s.threeBet}% \xB7 AF ${s.af} \xB7 Fold-to-raise ${s.foldToRaise}%
+\u2192 ${archetype}`
+    );
+  }
+  return lines;
+}
+function buildDecisionPrompt(summary, playbook, handEvents, recentHandLines, opponentStatsLines, sessionInsights, notes = "", handNotes = "") {
+  const playbookSection = playbook || "You are a skilled poker player. Play intelligently and mix your play.";
+  const handActionSection = handEvents.length > 0 ? `
+\u2550\u2550\u2550 THIS HAND \u2550\u2550\u2550
+${handEvents.join("\n")}
+` : "";
+  const opponentSection = opponentStatsLines.length > 0 ? `
+\u2550\u2550\u2550 OPPONENT PROFILE \u2550\u2550\u2550
+${opponentStatsLines.join("\n\n")}
+` : "";
+  const insightsSection = sessionInsights ? `
+\u2550\u2550\u2550 SESSION INSIGHTS \u2550\u2550\u2550
+${sessionInsights}
+` : "";
+  const recentHandsSection = recentHandLines.length > 0 ? `
+\u2550\u2550\u2550 RECENT HANDS (last ${recentHandLines.length}) \u2550\u2550\u2550
+${recentHandLines.join("\n")}
+` : "";
+  const notesParts = [];
+  if (notes) notesParts.push(`Session notes:
+${notes}`);
+  if (handNotes) notesParts.push(`THIS HAND ONLY:
+${handNotes}`);
+  const notesSection = notesParts.length > 0 ? `
+Tactical notes from your human partner:
+${notesParts.join("\n\n")}
+` : "";
+  return `You are playing No-Limit Hold'em poker. It is your turn to act.
+
+${playbookSection}
+
+\u2550\u2550\u2550 SITUATION \u2550\u2550\u2550
+${summary}
+${handActionSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
+Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. If raising, your amount MUST be within the range shown in Actions (e.g., 'raise 40-970' means amount between 40 and 970).
+
+Respond with ONLY a JSON object, no other text:
+{"action": "fold|check|call|raise|all_in", "amount": <number if raise/bet, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>"}`;
+}
+function buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights) {
+  const parts = [
+    "You are between hands in a poker session. Review the session so far and update your running insights."
+  ];
+  if (opponentStatsLines.length > 0) {
+    parts.push(`
+\u2550\u2550\u2550 OPPONENT PROFILE \u2550\u2550\u2550
+${opponentStatsLines.join("\n\n")}`);
+  }
+  if (recentHandLines.length > 0) {
+    parts.push(`
+\u2550\u2550\u2550 RECENT HANDS (last ${recentHandLines.length}) \u2550\u2550\u2550
+${recentHandLines.join("\n")}`);
+  }
+  parts.push(`
+\u2550\u2550\u2550 CURRENT SESSION INSIGHTS \u2550\u2550\u2550
+${currentInsights}`);
+  parts.push(
+    "\nUpdate your session insights. Cover: opponent tendencies THIS SESSION, your strategy adjustments, stack management observations. 2-3 sentences. If nothing meaningful changed, return the same insights unchanged.",
+    '\nRespond with ONLY JSON: {"insights": "..."}'
+  );
+  return parts.join("\n");
+}
+
+// poker-listener.ts
+var ACTIVE_PHASES = /* @__PURE__ */ new Set(["PREFLOP", "FLOP", "TURN", "RIVER"]);
+var debugStream = null;
+function initDebugLog() {
+  const logPath = join2(SKILL_ROOT, "poker-debug.log");
+  debugStream = createWriteStream(logPath, { flags: "w" });
+  debugStream.on("error", () => {
+    debugStream = null;
+  });
+}
+function debug(label, data) {
+  if (!debugStream) return;
+  const ts = (/* @__PURE__ */ new Date()).toISOString().slice(11, 23);
+  const lines = [`[${ts}] ${label}`];
+  for (const [key, val] of Object.entries(data)) {
+    if (typeof val === "string" && val.includes("\n")) {
+      lines.push(`  ${key}: |`);
+      for (const line of val.split("\n")) lines.push(`    ${line}`);
+    } else {
+      lines.push(`  ${key}: ${JSON.stringify(val)}`);
+    }
+  }
+  debugStream.write(lines.join("\n") + "\n\n");
+}
+function handSessionId(gameId, handNumber) {
+  return `poker-${gameId}-h${handNumber}`;
 }
 function processStateEvent(view, context) {
   const outputs = [];
@@ -642,13 +780,15 @@ function parseDirectArgs(argv) {
   let channel = null;
   let chatId = null;
   let account = null;
+  let debugFlag = false;
   for (let i = 0; i < argv.length; i++) {
     if (CHANNEL_ALIASES.has(argv[i]) && argv[i + 1]) channel = argv[i + 1];
     if (CHAT_ID_ALIASES.has(argv[i]) && argv[i + 1]) chatId = argv[i + 1];
     if (ACCOUNT_ALIASES.has(argv[i]) && argv[i + 1]) account = argv[i + 1];
+    if (argv[i] === "--debug") debugFlag = true;
   }
   const enabled = !!(channel && chatId);
-  return { enabled, channel, chatId, account };
+  return { enabled, channel, chatId, account, debug: debugFlag };
 }
 var deliveryAccount = null;
 var notifyAgentId = "main";
@@ -687,20 +827,12 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
       ], { timeout: 55e3 }, (err, stdout) => {
         if (mySeq !== decisionSeq) {
           emit({ type: "DECISION_STALE", skipped: mySeq, current: decisionSeq });
-          notifyAgent(
-            channel,
-            chatId,
-            `[POKER CONTROL SIGNAL: DECISION_STATUS] Timed out \u2014 the hand moved on before I could decide.`
-          );
+          notifyAgent(channel, chatId, controlSignals.decisionTimedOut());
           resolve();
           return;
         }
         if (err) {
-          notifyAgent(
-            channel,
-            chatId,
-            `[POKER CONTROL SIGNAL: DECISION_STATUS] Decision timed out \u2014 auto-folded.`
-          );
+          notifyAgent(channel, chatId, controlSignals.decisionAutoFolded());
           resolve();
           return;
         }
@@ -722,6 +854,9 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
           const msg = e instanceof Error ? e.message : String(e);
           emit({ type: "DECISION_PARSE_ERROR", error: msg, stdout: stdout.slice(0, 300) });
         }
+        if (decision) {
+          debug("DECISION_RESPONSE", { hand: myHandNumber, decision, rawAgentText: stdout.slice(0, 500) });
+        }
         if (!decision?.action) {
           emit({ type: "DECISION_NO_ACTION", stdout: stdout.slice(0, 300) });
           resolve();
@@ -732,11 +867,7 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
         }
         if (currentHandNumber !== myHandNumber) {
           emit({ type: "DECISION_STALE_HAND", decidedHand: myHandNumber, currentHand: currentHandNumber, action: decision.action });
-          notifyAgent(
-            channel,
-            chatId,
-            `[POKER CONTROL SIGNAL: DECISION_STATUS] Hand moved on while deciding \u2014 skipped ${decision.action}.`
-          );
+          notifyAgent(channel, chatId, controlSignals.decisionStaleHand(decision.action));
           resolve();
           return;
         }
@@ -751,6 +882,7 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(5e3)
         }).then((resp) => {
+          debug("ACTION_SUBMITTED", { hand: myHandNumber, action: decision.action, amount: decision.amount, narration: decision.narration, status: resp.status });
           if (resp.ok) {
             if (decision.narration) {
               recentEvents.push(decision.narration);
@@ -760,18 +892,10 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
             context.lastTurnKey = null;
             resp.text().then((reason) => {
               emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason });
-              notifyAgent(
-                channel,
-                chatId,
-                `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${resp.status}): ${reason || "unknown reason"}`
-              );
+              notifyAgent(channel, chatId, controlSignals.actionRejected(resp.status, reason || "unknown reason"));
             }).catch(() => {
               emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason: null });
-              notifyAgent(
-                channel,
-                chatId,
-                `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${resp.status}) \u2014 could not read reason.`
-              );
+              notifyAgent(channel, chatId, controlSignals.actionRejectedNoReason(resp.status));
             });
           }
         }).catch(async (actionErr) => {
@@ -838,11 +962,13 @@ function notifyAgent(channel, chatId, message) {
 }
 process.on("uncaughtException", (err) => {
   emit({ type: "CRASH", error: err.message });
+  debugStream?.end();
   process.exit(1);
 });
 process.on("unhandledRejection", (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
   emit({ type: "CRASH", error: msg });
+  debugStream?.end();
   process.exit(1);
 });
 var INSIGHTS_FILE = join2(SKILL_ROOT, "poker-session-insights.txt");
@@ -859,84 +985,6 @@ function writeSessionInsights(insights) {
   } catch {
   }
 }
-function formatRecentHand(hand) {
-  const num = hand.handNumber;
-  const outcome = hand.yourOutcome;
-  if (!outcome) return `#${num}: (no outcome data)`;
-  const winnerNames = hand.result.winners.map((w) => w.name).join(", ");
-  const pot = hand.result.potSize;
-  const board = hand.boardCards.length > 0 ? formatCards(hand.boardCards) : "";
-  if (outcome.action === "folded") {
-    const phase = outcome.phase ? ` on ${outcome.phase.toLowerCase()}` : " preflop";
-    return `#${num}: You folded${phase}. ${winnerNames} won ${pot}${pot <= hand.result.potSize * 0.5 ? " uncontested" : ""}.`;
-  }
-  if (outcome.action === "won") {
-    const showdownHands = hand.result.showdownHands;
-    if (showdownHands && showdownHands.length > 0) {
-      const myHand2 = outcome.holeCards ? formatCards(outcome.holeCards) : "??";
-      const ranking2 = outcome.handRanking || "unknown";
-      const losers = showdownHands.filter((sh) => !hand.result.winners.some((w) => w.name === sh.name)).map((sh) => `${sh.name}: ${formatCards(sh.holeCards)} (${sh.handRanking || "?"})`).join(", ");
-      return `#${num}: Showdown \u2014 You won ${pot} with ${myHand2} (${ranking2}).${losers ? ` ${losers} lost.` : ""} Board: ${board}`;
-    }
-    return `#${num}: You won ${pot} uncontested.`;
-  }
-  const myHand = outcome.holeCards ? formatCards(outcome.holeCards) : "??";
-  const ranking = outcome.handRanking || "unknown";
-  const invested = outcome.invested ?? 0;
-  const showdownWinner = hand.result.showdownHands?.find((sh) => hand.result.winners.some((w) => w.name === sh.name));
-  const winnerInfo = showdownWinner ? `${winnerNames} won ${pot} with ${formatCards(showdownWinner.holeCards)} (${showdownWinner.handRanking || "?"}). ` : `${winnerNames} won ${pot}. `;
-  return `#${num}: Showdown \u2014 ${winnerInfo}You lost ${invested} with ${myHand} (${ranking}). Board: ${board}`;
-}
-function formatOpponentStats(stats) {
-  const lines = [];
-  for (const [name, s] of Object.entries(stats)) {
-    const archetype = s.handsPlayed < 10 ? "(small sample)" : `${s.vpip >= 30 ? "Loose" : "Tight"}-${s.af >= 1.2 ? "aggressive" : "passive"}`;
-    lines.push(
-      `${name} (${s.handsPlayed} hands): VPIP ${s.vpip}% \xB7 PFR ${s.pfr}% \xB7 3-bet ${s.threeBet}% \xB7 AF ${s.af} \xB7 Fold-to-raise ${s.foldToRaise}%
-\u2192 ${archetype}`
-    );
-  }
-  return lines;
-}
-function buildDecisionPrompt(summary, playbook, handEvents, recentHandLines, opponentStatsLines, sessionInsights, notes = "", handNotes = "") {
-  const playbookSection = playbook || "You are a skilled poker player. Play intelligently and mix your play.";
-  const handActionSection = handEvents.length > 0 ? `
-\u2550\u2550\u2550 THIS HAND \u2550\u2550\u2550
-${handEvents.join("\n")}
-` : "";
-  const opponentSection = opponentStatsLines.length > 0 ? `
-\u2550\u2550\u2550 OPPONENT PROFILE \u2550\u2550\u2550
-${opponentStatsLines.join("\n\n")}
-` : "";
-  const insightsSection = sessionInsights ? `
-\u2550\u2550\u2550 SESSION INSIGHTS \u2550\u2550\u2550
-${sessionInsights}
-` : "";
-  const recentHandsSection = recentHandLines.length > 0 ? `
-\u2550\u2550\u2550 RECENT HANDS (last ${recentHandLines.length}) \u2550\u2550\u2550
-${recentHandLines.join("\n")}
-` : "";
-  const notesParts = [];
-  if (notes) notesParts.push(`Session notes:
-${notes}`);
-  if (handNotes) notesParts.push(`THIS HAND ONLY:
-${handNotes}`);
-  const notesSection = notesParts.length > 0 ? `
-Tactical notes from your human partner:
-${notesParts.join("\n\n")}
-` : "";
-  return `You are playing No-Limit Hold'em poker. It is your turn to act.
-
-${playbookSection}
-
-\u2550\u2550\u2550 SITUATION \u2550\u2550\u2550
-${summary}
-${handActionSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
-Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. If raising, your amount MUST be within the range shown in Actions (e.g., 'raise 40-970' means amount between 40 and 970).
-
-Respond with ONLY a JSON object, no other text:
-{"action": "fold|check|call|raise|all_in", "amount": <number if raise/bet, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>"}`;
-}
 async function main() {
   const backendUrl = "https://api.clawplay.fun";
   const config = readClawPlayConfig();
@@ -951,6 +999,7 @@ async function main() {
     emit({ type: "CONNECTION_ERROR", error: "--channel and --chat-id are required" });
     process.exit(1);
   }
+  if (direct.debug) initDebugLog();
   const channel = direct.channel;
   const chatId = direct.chatId;
   deliveryAccount = direct.account ?? config.accountId ?? null;
@@ -1010,6 +1059,7 @@ async function main() {
     if (exitInProgress) return;
     exitInProgress = true;
     clearInterval(heartbeatCheck);
+    debugStream?.end();
     const isRebuyState = exitCode !== 0 && context.prevState?.canRebuy === true && context.prevState?.yourChips === 0;
     const finalStack = context.prevState?.yourChips ?? "unknown";
     if (reason !== "Table closed" && !isRebuyState) {
@@ -1031,15 +1081,7 @@ async function main() {
       process.exit(exitCode);
       return;
     }
-    const notifyDone = exitCode === 0 ? notifyAgent(
-      channel,
-      chatId,
-      `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table ${gameId}. Reason: ${reason}. Final stack: ${finalStack}. Run post-game review per SKILL.md instructions.`
-    ) : notifyAgent(
-      channel,
-      chatId,
-      `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}. Offer to check status or reconnect.`
-    );
+    const notifyDone = exitCode === 0 ? notifyAgent(channel, chatId, controlSignals.gameOver(gameId, reason, finalStack)) : notifyAgent(channel, chatId, controlSignals.connectionError(gameId, reason, finalStack));
     notifyDone.then(() => {
       clearTimeout(forceExit);
       es?.close();
@@ -1073,6 +1115,7 @@ async function main() {
           unlinkSync(INSIGHTS_FILE);
         } catch {
         }
+        debug("SESSION_WARMUP", { gameId });
         warmupDone = new Promise((resolve) => {
           execFile("openclaw", [
             "agent",
@@ -1080,7 +1123,7 @@ async function main() {
             "--session-id",
             handSessionId(gameId, 1),
             "--message",
-            "(system: session warmup \u2014 no action needed)",
+            WARMUP_MESSAGE,
             "--thinking",
             "low",
             "--timeout",
@@ -1102,31 +1145,13 @@ async function main() {
         const handJustChanged = view.handNumber !== currentHandNumber;
         currentHandNumber = view.handNumber;
         if (handJustChanged) {
+          debug("HAND_CHANGED", { from: prevHandNumber, to: view.handNumber, stack: view.yourChips });
           if (prevHandNumber !== null) {
             const recentHandLines = view.recentHands?.length ? view.recentHands.slice(-5).map(formatRecentHand) : [];
             const opponentStatsLines = view.playerStats ? formatOpponentStats(view.playerStats) : [];
             const currentInsights = readSessionInsights() || "No session insights yet.";
-            const reflectionParts = [
-              "You are between hands in a poker session. Review the session so far and update your running insights."
-            ];
-            if (opponentStatsLines.length > 0) {
-              reflectionParts.push(`
-\u2550\u2550\u2550 OPPONENT PROFILE \u2550\u2550\u2550
-${opponentStatsLines.join("\n\n")}`);
-            }
-            if (recentHandLines.length > 0) {
-              reflectionParts.push(`
-\u2550\u2550\u2550 RECENT HANDS (last ${recentHandLines.length}) \u2550\u2550\u2550
-${recentHandLines.join("\n")}`);
-            }
-            reflectionParts.push(`
-\u2550\u2550\u2550 CURRENT SESSION INSIGHTS \u2550\u2550\u2550
-${currentInsights}`);
-            reflectionParts.push(
-              "\nUpdate your session insights. Cover: opponent tendencies THIS SESSION, your strategy adjustments, stack management observations. 2-3 sentences. If nothing meaningful changed, return the same insights unchanged.",
-              '\nRespond with ONLY JSON: {"insights": "..."}'
-            );
-            const reflectionPrompt = reflectionParts.join("\n");
+            const reflectionPrompt = buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights);
+            debug("REFLECTION_PROMPT", { hand: view.handNumber, prompt: reflectionPrompt });
             warmupDone = new Promise((resolve) => {
               execFile("openclaw", [
                 "agent",
@@ -1154,6 +1179,7 @@ ${currentInsights}`);
                       const parsed = JSON.parse(agentText.slice(innerStart, innerEnd + 1));
                       if (parsed.insights && typeof parsed.insights === "string") {
                         writeSessionInsights(parsed.insights.trim());
+                        debug("REFLECTION_RESPONSE", { hand: view.handNumber, insights: parsed.insights.trim(), rawAgentText: agentText.slice(0, 500) });
                         emit({ type: "SESSION_INSIGHTS_UPDATED", hand: view.handNumber });
                       }
                     }
@@ -1208,6 +1234,15 @@ ${currentInsights}`);
                 notes,
                 handNotes
               );
+              debug("YOUR_TURN", {
+                hand: currentHandNumber,
+                summary: output.summary,
+                playbook: playbook.slice(0, 100) + (playbook.length > 100 ? "..." : ""),
+                hasNotes: !!notes,
+                hasHandNotes: !!handNotes,
+                hasInsights: !!sessionInsights
+              });
+              debug("DECISION_PROMPT", { hand: currentHandNumber, prompt });
               sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, context);
               break;
             }
@@ -1250,30 +1285,18 @@ ${currentInsights}`);
                   const now = Date.now();
                   if (highPriority || now - lastHandUpdateTime > HAND_UPDATE_COOLDOWN_MS) {
                     lastHandUpdateTime = now;
-                    notifyAgent(
-                      channel,
-                      chatId,
-                      `[POKER CONTROL SIGNAL: HAND_UPDATE] ${updateReason}`
-                    );
+                    notifyAgent(channel, chatId, controlSignals.handUpdate(updateReason));
                   }
                 }
               }
               break;
             }
             case "WAITING_FOR_PLAYERS":
-              notifyAgent(
-                channel,
-                chatId,
-                `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table ${gameId}. Ask user if they want to keep waiting or leave.`
-              );
+              notifyAgent(channel, chatId, controlSignals.waitingForPlayers(gameId));
               break;
             case "REBUY_AVAILABLE": {
               const amt = output.state?.rebuyAmount || "the default amount";
-              notifyAgent(
-                channel,
-                chatId,
-                `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table ${gameId}. Rebuy available for ${amt} chips. Ask user if they want to rebuy or leave.`
-              );
+              notifyAgent(channel, chatId, controlSignals.rebuyAvailable(gameId, amt));
               break;
             }
             default:
@@ -1313,9 +1336,6 @@ if (isDirectRun && process.argv.length > 3) {
   main();
 }
 export {
-  buildDecisionPrompt,
-  buildHandResultSummary,
-  buildSummary,
   parseDirectArgs,
   processStateEvent,
   readHandNotes,

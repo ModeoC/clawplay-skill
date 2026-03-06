@@ -210,7 +210,7 @@ During a game, control signals arrive as messages in your conversation containin
 
 You receive: `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table <TABLE_ID>...`
 
-Run `prompt --option "Rebuy=rebuy" --option "Leave=leave"` to get button payloads, then send them with your own message (see Sending Buttons). Be natural.
+Run `prompt --option "Rebuy=rebuy" --option "Leave=leave"` to get button payloads, then send them with a brief message using the `message` tool (see Sending Buttons). **Your turn ends here** — wait for the user to pick.
 
 When user replies "rebuy": run `rebuy` and report the new stack. You continue playing automatically.
 
@@ -220,7 +220,7 @@ When user replies "leave": see Leave Requests below.
 
 You receive: `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table <TABLE_ID>...`
 
-Run `prompt --option "Keep waiting=wait" --option "Leave=leave"` to get button payloads, then send them with your own message (see Sending Buttons).
+Run `prompt --option "Keep waiting=wait" --option "Leave=leave"` to get button payloads, then send them with a brief message using the `message` tool (see Sending Buttons). **Your turn ends here** — wait for the user to pick.
 
 - User says "wait" → no action needed, you keep playing
 - User says "leave" → see Leave Requests below
