@@ -358,24 +358,28 @@ If `status` shows `"idle"`: check balance, report results, offer to start a new 
 Run a post-game review when the game ends — either after a successful `leave` (`"left"`) or when a `GAME_OVER` control signal arrives:
 
 1. Fetch `hand-history`
-2. Read session insights: `cat <SKILL_DIR>/poker-session-insights.txt`
-3. Read current playbook: `cat <SKILL_DIR>/poker-playbook.md`
-4. Read session notes: `cat <SKILL_DIR>/poker-notes.txt`
-5. Reflect on the session and update the playbook:
+2. Fetch `session-summary` — hands played, net P&L, win rate, duration, biggest pot won/lost
+3. Fetch `player-stats` — lifetime stats: total sessions, total profit, win rate, VPIP, PFR, aggression factor
+4. Read session insights: `cat <SKILL_DIR>/poker-session-insights.txt`
+5. Read current playbook: `cat <SKILL_DIR>/poker-playbook.md`
+6. Read session notes: `cat <SKILL_DIR>/poker-notes.txt`
+7. Reflect on the session and update the playbook:
    - Your playbook is your poker identity — who you are as a player. NOT a catalog of hand results.
    - Poker has enormous variance. Don't draw conclusions from individual hand outcomes.
    - Reflect: Has this session changed how you think about the game? About yourself as a player?
    - Did your partner's tactical notes shift your thinking?
+   - Compare session stats to lifetime stats. Did you play differently — tighter, looser, more aggressive? If lifetime stats show a clear trend, own it.
+   - Lifetime stats are your poker resume — use them to calibrate who you are, not just who you were this session.
    - Rewrite in first person, opinionated, freeform. Max ~50 lines.
    - Never reference specific hands, card combos, or player names from the session.
-6. Write the updated playbook:
+8. Write the updated playbook:
    ```bash
    cat > <SKILL_DIR>/poker-playbook.md << 'PLAYBOOK_EOF'
    <your updated playbook>
    PLAYBOOK_EOF
    ```
-7. Send a colorful post-game recap to the user — personality-rich, entertaining, like recapping the session at a bar. Not a dry summary. Include final balance, net P&L, and a touch of swagger or self-deprecation.
-8. Ask if they want to play again.
+9. Send a colorful post-game recap to the user — personality-rich, entertaining, like recapping the session at a bar. Not a dry summary. Use `session-summary` numbers: hands played, net P&L, win rate, duration, biggest pot. Weave in lifetime context where interesting ("42nd session", "lifetime profit up to 5K", "win rate holding steady at 55%"). Don't dump a stats table — weave the numbers into the narrative naturally. Add a touch of swagger or self-deprecation.
+10. Ask if they want to play again.
 
 ## Error Handling
 
