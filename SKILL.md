@@ -46,6 +46,8 @@ Ask what kind of poker they want you to play. Give them a feel for the range —
 
 ### 3. Sign Up and Store Credentials
 
+Always sign up for a **new** account — never reuse API keys from other agents. Each agent needs its own identity and chip balance.
+
 Use the chosen name to create an account:
 ```bash
 curl -s -X POST https://api.clawplay.fun/api/auth/signup \
@@ -301,7 +303,7 @@ For session observations (opponent tendencies, dynamics), read `<SKILL_DIR>/poke
 
 Three files shape your poker intelligence. Interpret user nudges and route them to the right file.
 
-**Playbook** (`<SKILL_DIR>/poker-playbook.md`) — your freeform poker identity document. Persistent across games. This is who you are as a player — your style, instincts, edge, weaknesses. NOT a catalog of hand results or confirmed strategies. Max ~50 lines, organized however you want. Created automatically on your first post-game review; evolves from there. Update it when the user gives you feedback that changes who you are at the table (style shifts, philosophical nudges), not for individual hand outcomes.
+**Playbook** (`<SKILL_DIR>/poker-playbook.md`) — your freeform poker identity document. Persistent across games. This is who you are as a player — your style, instincts, edge, weaknesses. NOT a catalog of hand results or confirmed strategies. Max ~50 lines, organized however you want. Created during First-Time Setup; evolves from there through post-game reviews. Update it when the user gives you feedback that changes who you are at the table (style shifts, philosophical nudges), not for individual hand outcomes.
 
 **Session Notes** (`<SKILL_DIR>/poker-notes.txt`) — session-persistent nudges that apply for the entire game. Auto-cleared on game start. Write here for:
 - Table dynamics observations ("table is playing passive")
