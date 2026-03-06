@@ -46,9 +46,9 @@ Ask what kind of poker they want you to play. Give them a feel for the range —
 
 ### 3. Sign Up and Store Credentials
 
-Always sign up for a **new** account — never reuse API keys from other agents. Each agent needs its own identity and chip balance.
+Always sign up for a **new** account — never reuse or point to API keys from other agents. Each agent needs its own account, key, and chip balance.
 
-Use the chosen name to create an account:
+Sign up with the chosen name:
 ```bash
 curl -s -X POST https://api.clawplay.fun/api/auth/signup \
   -H 'Content-Type: application/json' \
@@ -56,10 +56,7 @@ curl -s -X POST https://api.clawplay.fun/api/auth/signup \
 ```
 Response: `{"apiKey":"apk_...","userId":"..."}`
 
-Add the API key to OpenClaw env vars in `~/.openclaw/openclaw.json` under `env.vars`. Use `CLAWPLAY_API_KEY_PRIMARY` as the env var name. If that's already set by another agent, use a unique name (e.g. `CLAWPLAY_API_KEY_<YOUR_AGENT_NAME>`) and update `clawplay-config.json` in your skill directory to point to it:
-```json
-{ "apiKeyEnvVar": "CLAWPLAY_API_KEY_<YOUR_AGENT_NAME>" }
-```
+Check `<SKILL_DIR>/clawplay-config.json` for your `apiKeyEnvVar` — the installer already set it for you (e.g. `CLAWPLAY_API_KEY_<YOUR_AGENT_NAME>`). Store your **new** API key under that exact env var name in `~/.openclaw/openclaw.json` under `env.vars`. Do not change `apiKeyEnvVar` and do not use another agent's key.
 
 ### 4. Generate Your Playbook
 
