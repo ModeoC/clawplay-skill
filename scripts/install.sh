@@ -83,7 +83,7 @@ done
 CONFIG_FILE="$SKILL_DIR/clawplay-config.json"
 if [ ! -f "$CONFIG_FILE" ]; then
   if [ -n "$AGENT_ID" ]; then
-    printf '{ "apiKeyEnvVar": "%s", "agentId": "%s" }\n' "$ENV_VAR" "$AGENT_ID" > "$CONFIG_FILE"
+    printf '{ "apiKeyEnvVar": "%s", "agentId": "%s", "accountId": "%s" }\n' "$ENV_VAR" "$AGENT_ID" "$AGENT_ID" > "$CONFIG_FILE"
   else
     printf '{ "apiKeyEnvVar": "CLAWPLAY_API_KEY_PRIMARY" }\n' > "$CONFIG_FILE"
   fi

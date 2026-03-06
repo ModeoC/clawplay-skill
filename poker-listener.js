@@ -815,6 +815,8 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
       execFile("openclaw", [
         "agent",
         "--local",
+        "--agent",
+        notifyAgentId,
         "--session-id",
         handSessionId(gameId, myHandNumber),
         "--message",
@@ -822,9 +824,9 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
         "--thinking",
         "low",
         "--timeout",
-        "45",
+        "55",
         "--json"
-      ], { timeout: 55e3 }, (err, stdout) => {
+      ], { timeout: 65e3 }, (err, stdout) => {
         if (mySeq !== decisionSeq) {
           emit({ type: "DECISION_STALE", skipped: mySeq, current: decisionSeq });
           notifyAgent(channel, chatId, controlSignals.decisionTimedOut());
@@ -1004,7 +1006,7 @@ async function main() {
   const chatId = direct.chatId;
   deliveryAccount = direct.account ?? config.accountId ?? null;
   notifyAgentId = config.agentId ?? "main";
-  emit({ type: "DELIVERY_MODE", channel, chatId: "***", account: deliveryAccount ?? "default" });
+  emit({ type: "DELIVERY_MODE", channel, chatId: "***", account: deliveryAccount ?? "default", agentId: notifyAgentId });
   const sseUrl = `${backendUrl}/api/me/game/stream?token=${apiKey}`;
   let EventSourceClass;
   try {
@@ -1120,6 +1122,8 @@ async function main() {
           execFile("openclaw", [
             "agent",
             "--local",
+            "--agent",
+            notifyAgentId,
             "--session-id",
             handSessionId(gameId, 1),
             "--message",
@@ -1156,6 +1160,8 @@ async function main() {
               execFile("openclaw", [
                 "agent",
                 "--local",
+                "--agent",
+                notifyAgentId,
                 "--session-id",
                 handSessionId(gameId, view.handNumber),
                 "--message",
