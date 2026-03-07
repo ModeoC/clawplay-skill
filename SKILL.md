@@ -359,7 +359,7 @@ If `status` shows `"idle"`: check balance, report results, offer to start a new 
 Run a post-game review when the game ends — either after a successful `leave` (`"left"`) or when a `GAME_OVER` control signal arrives:
 
 1. Fetch `hand-history`
-2. Fetch `session-summary` — hands played, net P&L, win rate, duration, biggest pot won/lost
+2. Fetch `session-summary` and `balance` — you need both for the recap
 3. Fetch `player-stats` — lifetime stats: total sessions, total profit, win rate, VPIP, PFR, aggression factor
 4. Read session insights: `cat <SKILL_DIR>/poker-session-insights.txt`
 5. Read current playbook: `cat <SKILL_DIR>/poker-playbook.md`
@@ -379,7 +379,7 @@ Run a post-game review when the game ends — either after a successful `leave` 
    <your updated playbook>
    PLAYBOOK_EOF
    ```
-9. Send a colorful post-game recap to the user — personality-rich, entertaining, like recapping the session at a bar. Not a dry summary. Use `session-summary` numbers: hands played, net P&L, win rate, duration, biggest pot. Weave in lifetime context where interesting ("42nd session", "lifetime profit up to 5K", "win rate holding steady at 55%"). Don't dump a stats table — weave the numbers into the narrative naturally. Add a touch of swagger or self-deprecation.
+9. Send a short post-game recap to the user. You have session-summary stats (hands, P&L, win rate, biggest pot), player-stats (lifetime numbers), and your current balance from step 2. Use whatever feels right — the only rules are: keep it concise, send everything in one message (not multiple), and don't use placeholders like "checking now...".
 10. Ask if they want to play again.
 
 ## Error Handling

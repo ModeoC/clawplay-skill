@@ -546,7 +546,8 @@ var controlSignals = {
   connectionError: (gameId, reason, finalStack) => `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}. Offer to check status or reconnect.`,
   handUpdate: (msg) => `[POKER CONTROL SIGNAL: HAND_UPDATE] ${msg}`,
   waitingForPlayers: (gameId) => `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table ${gameId}. Run prompt to get buttons and send them with your message using the message tool. Your turn ends after sending.`,
-  rebuyAvailable: (gameId, amount) => `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table ${gameId}. Rebuy available for ${amount} chips. Run prompt to get buttons and send them with your message using the message tool. Your turn ends after sending.`
+  rebuyAvailable: (gameId, amount) => `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table ${gameId}. Rebuy available for ${amount} chips. Run prompt to get buttons and send them with your message using the message tool. Your turn ends after sending.`,
+  decisionFailureExit: (count) => `[POKER CONTROL SIGNAL: DECISION_STATUS] ${count} consecutive decisions failed (timeout/error) \u2014 listener exiting. The game session may have a file lock or routing issue. Tell the user something went wrong with your decision-making and you had to leave the table.`
 };
 function buildSummary(view) {
   const cards = view.yourCards?.length ? formatCards(view.yourCards) : "??";
@@ -796,6 +797,9 @@ var currentHandNumber = null;
 var warmupDone = Promise.resolve();
 var decisionSeq = 0;
 var lastDecision = Promise.resolve();
+var consecutiveDecisionFailures = 0;
+var MAX_CONSECUTIVE_FAILURES = 3;
+var onFatalDecisionFailure = null;
 var lastHandUpdateTime = 0;
 var HAND_UPDATE_COOLDOWN_MS = 3e4;
 var gameStartedEmitted = false;
@@ -834,6 +838,14 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
           return;
         }
         if (err) {
+          consecutiveDecisionFailures++;
+          emit({ type: "DECISION_FAILURE", consecutive: consecutiveDecisionFailures, error: err.message });
+          if (consecutiveDecisionFailures >= MAX_CONSECUTIVE_FAILURES && onFatalDecisionFailure) {
+            const reason = `${consecutiveDecisionFailures} consecutive decision failures`;
+            notifyAgent(channel, chatId, controlSignals.decisionFailureExit(consecutiveDecisionFailures)).finally(() => onFatalDecisionFailure(reason));
+            resolve();
+            return;
+          }
           notifyAgent(channel, chatId, controlSignals.decisionAutoFolded());
           resolve();
           return;
@@ -860,10 +872,19 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
           debug("DECISION_RESPONSE", { hand: myHandNumber, decision, rawAgentText: stdout.slice(0, 500) });
         }
         if (!decision?.action) {
-          emit({ type: "DECISION_NO_ACTION", stdout: stdout.slice(0, 300) });
+          consecutiveDecisionFailures++;
+          emit({ type: "DECISION_FAILURE", consecutive: consecutiveDecisionFailures, reason: "no_action", stdout: stdout.slice(0, 300) });
+          if (consecutiveDecisionFailures >= MAX_CONSECUTIVE_FAILURES && onFatalDecisionFailure) {
+            const reason = `${consecutiveDecisionFailures} consecutive decision failures`;
+            notifyAgent(channel, chatId, controlSignals.decisionFailureExit(consecutiveDecisionFailures)).finally(() => onFatalDecisionFailure(reason));
+            resolve();
+            return;
+          }
+          notifyAgent(channel, chatId, controlSignals.decisionAutoFolded());
           resolve();
           return;
         }
+        consecutiveDecisionFailures = 0;
         if (decision.action === "fold") {
           foldedInHand = myHandNumber;
         }
@@ -1125,6 +1146,7 @@ async function main() {
       process.exit(exitCode);
     });
   }
+  onFatalDecisionFailure = (reason) => gracefulExit(reason, 1);
   for (const signal of ["SIGTERM", "SIGINT"]) {
     process.on(signal, () => {
       emit({ type: "SIGNAL_EXIT", signal });
@@ -1140,6 +1162,7 @@ async function main() {
       lastEventTime = Date.now();
       lastStateEventTime = Date.now();
       reconnectAttempts = 0;
+      consecutiveDecisionFailures = 0;
       if (sseFirstConnect) {
         sseFirstConnect = false;
         try {
