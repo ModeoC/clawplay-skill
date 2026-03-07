@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+// poker-cli.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+
 // review.ts
 import { readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
@@ -242,6 +246,33 @@ async function cmdPrompt(args) {
     buttons: formatButtonPayloads(options)
   });
 }
+async function cmdCheckUpdate() {
+  let localVersion = "unknown";
+  try {
+    const skillMd = readFileSync2(join2(SKILL_ROOT, "SKILL.md"), "utf-8");
+    const match = skillMd.match(/^version:\s*(.+)$/m);
+    if (match) localVersion = match[1].trim();
+  } catch {
+  }
+  let remoteVersion = "unknown";
+  try {
+    const resp = await fetch(
+      "https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/SKILL.md",
+      { signal: AbortSignal.timeout(1e4) }
+    );
+    if (resp.ok) {
+      const text = await resp.text();
+      const match = text.match(/^version:\s*(.+)$/m);
+      if (match) remoteVersion = match[1].trim();
+    }
+  } catch {
+  }
+  output({
+    local: localVersion,
+    remote: remoteVersion,
+    updateAvailable: remoteVersion !== "unknown" && localVersion !== remoteVersion
+  });
+}
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0];
@@ -261,7 +292,8 @@ async function main() {
       '  prompt            Build button payloads (--option "Label=value" ...)',
       "  rebuy             Rebuy after busting",
       "  leave             Leave the current game",
-      "  signup <username> Create a new account"
+      "  signup <username> Create a new account",
+      "  check-update      Check if a newer version is available"
     ];
     console.log(help.join("\n"));
     process.exit(0);
@@ -313,10 +345,13 @@ async function main() {
       case "prompt":
         await cmdPrompt(args.slice(1));
         break;
+      case "check-update":
+        await cmdCheckUpdate();
+        break;
       default:
         die(`Unknown command: ${cmd || "(none)"}
 
-Commands: signup, balance, status, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt`);
+Commands: signup, balance, status, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, check-update`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

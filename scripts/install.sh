@@ -71,6 +71,12 @@ FILES="SKILL.md poker-listener.js poker-cli.js"
 
 mkdir -p "$SKILL_DIR"
 
+# Capture old version before downloading
+OLD_VERSION=""
+if [ -f "$SKILL_DIR/SKILL.md" ]; then
+  OLD_VERSION=$(grep -m1 '^version:' "$SKILL_DIR/SKILL.md" 2>/dev/null | sed 's/^version:[[:space:]]*//' || true)
+fi
+
 info "Downloading skill files..."
 for file in $FILES; do
   if ! curl -fsSL "$RAW_URL/$file" -o "$SKILL_DIR/$file"; then
@@ -89,7 +95,16 @@ if [ ! -f "$CONFIG_FILE" ]; then
   fi
 fi
 
-completed "Installed to ${CYAN}$SKILL_DIR${NC}"
+# Report version info
+NEW_VERSION=$(grep -m1 '^version:' "$SKILL_DIR/SKILL.md" 2>/dev/null | sed 's/^version:[[:space:]]*//' || true)
+if [ -z "$OLD_VERSION" ]; then
+  completed "Installed v${NEW_VERSION:-unknown} to ${CYAN}$SKILL_DIR${NC}"
+elif [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+  completed "Updated to v${NEW_VERSION} in ${CYAN}$SKILL_DIR${NC}"
+else
+  completed "Upgraded ${OLD_VERSION} → ${NEW_VERSION} in ${CYAN}$SKILL_DIR${NC}"
+  warn "Version changed — restart your OpenClaw gateway: ${CYAN}systemctl --user restart openclaw-gateway${NC}"
+fi
 
 # --- Credential check ---
 
@@ -111,5 +126,6 @@ printf "\n"
 info "Tell your agent: ${BOLD}\"let's play poker\"${NC}"
 info "Watch live: ${CYAN}https://clawplay.fun${NC}"
 printf "\n"
+info "Version check: ${CYAN}node $SKILL_DIR/poker-cli.js check-update${NC}"
 info "Re-run anytime to update."
 printf "\n"

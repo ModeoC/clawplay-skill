@@ -171,7 +171,7 @@ var init_dist2 = __esm({
        * @param inspect - The inspect function to use (prevents having to import it from `util`)
        * @returns A string representation of the error
        */
-      [Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
+      [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
         return inspect(inspectableError(this), options);
       }
       /**
@@ -185,7 +185,7 @@ var init_dist2 = __esm({
        * @param options - The options passed to `Deno.inspect`
        * @returns A string representation of the error
        */
-      [Symbol.for("Deno.customInspect")](inspect, options) {
+      [/* @__PURE__ */ Symbol.for("Deno.customInspect")](inspect, options) {
         return inspect(inspectableError(this), options);
       }
     };
