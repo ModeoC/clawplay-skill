@@ -545,8 +545,8 @@ var controlSignals = {
   gameOver: (gameId, reason, finalStack) => `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table ${gameId}. Reason: ${reason}. Final stack: ${finalStack}. Run post-game review per SKILL.md instructions.`,
   connectionError: (gameId, reason, finalStack) => `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}. Offer to check status or reconnect.`,
   handUpdate: (msg) => `[POKER CONTROL SIGNAL: HAND_UPDATE] ${msg}`,
-  waitingForPlayers: (gameId) => `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table ${gameId}. Ask user if they want to keep waiting or leave.`,
-  rebuyAvailable: (gameId, amount) => `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table ${gameId}. Rebuy available for ${amount} chips. Ask user if they want to rebuy or leave.`
+  waitingForPlayers: (gameId) => `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table ${gameId}. Run prompt to get buttons and send them with your message using the message tool. Your turn ends after sending.`,
+  rebuyAvailable: (gameId, amount) => `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table ${gameId}. Rebuy available for ${amount} chips. Run prompt to get buttons and send them with your message using the message tool. Your turn ends after sending.`
 };
 function buildSummary(view) {
   const cards = view.yourCards?.length ? formatCards(view.yourCards) : "??";
@@ -962,6 +962,20 @@ function notifyAgent(channel, chatId, message) {
     });
   });
 }
+function notifyAgentSilent(message) {
+  return new Promise((resolve) => {
+    execFile("openclaw", [
+      "agent",
+      "--agent",
+      notifyAgentId,
+      "--message",
+      message
+    ], { timeout: 6e4 }, (err) => {
+      if (err) emit({ type: "NOTIFY_AGENT_ERROR", error: err.message });
+      resolve();
+    });
+  });
+}
 process.on("uncaughtException", (err) => {
   emit({ type: "CRASH", error: err.message });
   debugStream?.end();
@@ -1020,6 +1034,7 @@ async function main() {
   let es;
   let sseFirstConnect = true;
   let lastEventTime = Date.now();
+  let lastStateEventTime = Date.now();
   const HEARTBEAT_TIMEOUT_MS = 9e4;
   let reconnectAttempts = 0;
   const MAX_RECONNECT_ATTEMPTS = 3;
@@ -1050,6 +1065,26 @@ async function main() {
           emit({ type: "SSE_RECONNECT_ATTEMPT", attempt: reconnectAttempts });
           es.close();
           setTimeout(() => connectSSE(), RECONNECT_DELAY_MS * 2 ** (reconnectAttempts - 1));
+        }
+      } finally {
+        heartbeatCheckRunning = false;
+      }
+    } else if (Date.now() - lastStateEventTime > HEARTBEAT_TIMEOUT_MS) {
+      heartbeatCheckRunning = true;
+      try {
+        emit({ type: "STATE_SILENCE_DETECTED", lastStateAge: Date.now() - lastStateEventTime });
+        try {
+          const resp = await fetch(`${backendUrl}/api/me/game`, {
+            headers: { "x-api-key": apiKey },
+            signal: AbortSignal.timeout(5e3)
+          });
+          if (!resp.ok) {
+            emit({ type: "STATUS_CHECK", status: resp.status });
+            gracefulExit("Left the table", 0);
+            return;
+          }
+          lastStateEventTime = Date.now();
+        } catch {
         }
       } finally {
         heartbeatCheckRunning = false;
@@ -1100,8 +1135,10 @@ async function main() {
     if (es) es.close();
     es = new EventSourceClass(sseUrl);
     lastEventTime = Date.now();
+    lastStateEventTime = Date.now();
     es.onopen = () => {
       lastEventTime = Date.now();
+      lastStateEventTime = Date.now();
       reconnectAttempts = 0;
       if (sseFirstConnect) {
         sseFirstConnect = false;
@@ -1142,6 +1179,7 @@ async function main() {
     es.addEventListener("state", (event) => {
       try {
         lastEventTime = Date.now();
+        lastStateEventTime = Date.now();
         const view = JSON.parse(event.data);
         if (gameId === "unknown" && view.gameId) gameId = view.gameId;
         reconnectAttempts = 0;
@@ -1298,11 +1336,11 @@ async function main() {
               break;
             }
             case "WAITING_FOR_PLAYERS":
-              notifyAgent(channel, chatId, controlSignals.waitingForPlayers(gameId));
+              notifyAgentSilent(controlSignals.waitingForPlayers(gameId));
               break;
             case "REBUY_AVAILABLE": {
               const amt = output.state?.rebuyAmount || "the default amount";
-              notifyAgent(channel, chatId, controlSignals.rebuyAvailable(gameId, amt));
+              notifyAgentSilent(controlSignals.rebuyAvailable(gameId, amt));
               break;
             }
             default:
