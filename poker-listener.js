@@ -403,8 +403,8 @@ var init_dist2 = __esm({
 
 // poker-listener.ts
 import { execFile } from "node:child_process";
-import { readFileSync as readFileSync2, writeFileSync, unlinkSync, createWriteStream } from "node:fs";
-import { join as join2 } from "node:path";
+import { readFileSync as readFileSync3, writeFileSync, unlinkSync, createWriteStream } from "node:fs";
+import { join as join3 } from "node:path";
 
 // card-format.ts
 var SUIT_MAP = { s: "\u2660", h: "\u2665", d: "\u2666", c: "\u2663" };
@@ -674,11 +674,255 @@ ${currentInsights}`);
   return parts.join("\n");
 }
 
+// gateway-client.ts
+import { randomUUID } from "node:crypto";
+import { readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+var PROTOCOL_VERSION = 3;
+function resolveGatewayToken() {
+  const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim() || process.env.CLAWDBOT_GATEWAY_TOKEN?.trim();
+  if (envToken) return envToken;
+  try {
+    const home = process.env.HOME || "/root";
+    const cfg = JSON.parse(readFileSync2(join2(home, ".openclaw", "openclaw.json"), "utf8"));
+    const token = cfg?.gateway?.auth?.token;
+    if (typeof token === "string" && token.trim()) return token.trim();
+  } catch {
+  }
+  return void 0;
+}
+function resolveGatewayUrl() {
+  try {
+    const home = process.env.HOME || "/root";
+    const cfg = JSON.parse(readFileSync2(join2(home, ".openclaw", "openclaw.json"), "utf8"));
+    const port = cfg?.gateway?.port || 18789;
+    return `ws://127.0.0.1:${port}`;
+  } catch {
+    return "ws://127.0.0.1:18789";
+  }
+}
+var GatewayWsClient = class {
+  ws = null;
+  pending = /* @__PURE__ */ new Map();
+  token;
+  url;
+  connected = false;
+  closed = false;
+  connectPromise = null;
+  connectResolve = null;
+  connectReject = null;
+  reconnectTimer = null;
+  backoffMs = 1e3;
+  nonce = null;
+  challengeTimer = null;
+  emitFn = null;
+  constructor(opts) {
+    this.token = resolveGatewayToken();
+    this.url = resolveGatewayUrl();
+    this.emitFn = opts?.emit ?? null;
+  }
+  /** Connect to the gateway and complete the auth handshake. */
+  async connect() {
+    if (this.connected) return;
+    if (this.connectPromise) return this.connectPromise;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.connectPromise = new Promise((resolve, reject) => {
+      this.connectResolve = resolve;
+      this.connectReject = reject;
+      this.startConnection();
+    });
+    return this.connectPromise;
+  }
+  startConnection() {
+    if (this.closed) return;
+    this.nonce = null;
+    try {
+      this.ws = new WebSocket(this.url);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.connectReject?.(new Error(`WebSocket create failed: ${msg}`));
+      return;
+    }
+    this.challengeTimer = setTimeout(() => {
+      this.challengeTimer = null;
+      if (!this.connected) {
+        this.ws?.close();
+        this.connectReject?.(new Error("Gateway connect challenge timeout"));
+      }
+    }, 5e3);
+    this.ws.onopen = () => {
+      this.backoffMs = 1e3;
+      this.emit({ type: "GW_WS_OPEN" });
+    };
+    this.ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(String(event.data));
+        this.handleMessage(msg);
+      } catch {
+      }
+    };
+    this.ws.onclose = () => {
+      if (this.challengeTimer) {
+        clearTimeout(this.challengeTimer);
+        this.challengeTimer = null;
+      }
+      const wasConnected = this.connected;
+      this.connected = false;
+      this.ws = null;
+      this.flushPending(new Error("Gateway connection closed"));
+      if (wasConnected && !this.closed) {
+        this.scheduleReconnect();
+      } else if (!wasConnected) {
+        this.connectReject?.(new Error("Gateway connection closed before auth"));
+      }
+    };
+    this.ws.onerror = () => {
+    };
+  }
+  handleMessage(msg) {
+    if (msg.type === "event") {
+      if (msg.event === "connect.challenge") {
+        const payload = msg.payload;
+        this.nonce = payload?.nonce?.toString().trim() ?? null;
+        if (this.nonce) this.sendConnectRequest();
+      }
+      return;
+    }
+    if (msg.type === "res") {
+      const id = msg.id;
+      const pending = this.pending.get(id);
+      if (!pending) return;
+      const payload = msg.payload;
+      if (pending.expectFinal && payload?.status === "accepted") return;
+      this.pending.delete(id);
+      clearTimeout(pending.timer);
+      if (msg.ok) {
+        pending.resolve(payload);
+      } else {
+        const errMsg = msg.error?.message ?? "Unknown gateway error";
+        pending.reject(new Error(errMsg));
+      }
+    }
+  }
+  sendConnectRequest() {
+    const params = {
+      minProtocol: PROTOCOL_VERSION,
+      maxProtocol: PROTOCOL_VERSION,
+      client: {
+        id: "gateway-client",
+        version: "dev",
+        platform: process.platform,
+        mode: "backend"
+      },
+      caps: [],
+      role: "operator",
+      scopes: ["operator.admin"]
+    };
+    if (this.token) {
+      params.auth = { token: this.token };
+    }
+    this.request("connect", params, { timeoutMs: 5e3 }).then(() => {
+      this.connected = true;
+      if (this.challengeTimer) {
+        clearTimeout(this.challengeTimer);
+        this.challengeTimer = null;
+      }
+      this.connectResolve?.();
+      this.connectPromise = null;
+      this.connectResolve = null;
+      this.connectReject = null;
+      this.emit({ type: "GW_CONNECTED" });
+    }).catch((err) => {
+      this.connectReject?.(err);
+      this.connectPromise = null;
+      this.connectResolve = null;
+      this.connectReject = null;
+      this.ws?.close();
+    });
+  }
+  /** Send an RPC request to the gateway. */
+  request(method, params, opts) {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("Gateway not connected"));
+        return;
+      }
+      const id = randomUUID();
+      const timeoutMs = opts?.timeoutMs ?? 3e4;
+      const expectFinal = opts?.expectFinal ?? false;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Gateway request timeout (${method}, ${timeoutMs}ms)`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, expectFinal, timer });
+      const frame = { type: "req", id, method, params };
+      this.ws.send(JSON.stringify(frame));
+    });
+  }
+  /** Call the agent RPC method. Handles two-phase response. */
+  async callAgent(params, timeoutMs = 6e4) {
+    if (!this.connected) await this.connect();
+    const rpcParams = {
+      message: params.message,
+      idempotencyKey: params.idempotencyKey ?? randomUUID()
+    };
+    if (params.agentId) rpcParams.agentId = params.agentId;
+    if (params.sessionKey) rpcParams.sessionKey = params.sessionKey;
+    if (params.sessionId) rpcParams.sessionId = params.sessionId;
+    if (params.thinking) rpcParams.thinking = params.thinking;
+    if (params.timeout != null) rpcParams.timeout = params.timeout;
+    const result = await this.request("agent", rpcParams, {
+      timeoutMs,
+      expectFinal: true
+    });
+    return result?.result ?? { payloads: [] };
+  }
+  /** Disconnect and stop reconnecting. */
+  stop() {
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.ws?.close();
+    this.ws = null;
+    this.flushPending(new Error("Gateway client stopped"));
+  }
+  scheduleReconnect() {
+    if (this.closed) return;
+    this.emit({ type: "GW_RECONNECT", delayMs: this.backoffMs });
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectPromise = new Promise((resolve, reject) => {
+        this.connectResolve = resolve;
+        this.connectReject = reject;
+        this.startConnection();
+      });
+      this.connectPromise.catch(() => {
+      });
+    }, this.backoffMs);
+    this.backoffMs = Math.min(this.backoffMs * 2, 3e4);
+  }
+  flushPending(err) {
+    for (const [, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(err);
+    }
+    this.pending.clear();
+  }
+  emit(obj) {
+    this.emitFn?.(obj);
+  }
+};
+
 // poker-listener.ts
 var ACTIVE_PHASES = /* @__PURE__ */ new Set(["PREFLOP", "FLOP", "TURN", "RIVER"]);
 var debugStream = null;
 function initDebugLog() {
-  const logPath = join2(SKILL_ROOT, "poker-debug.log");
+  const logPath = join3(SKILL_ROOT, "poker-debug.log");
   debugStream = createWriteStream(logPath, { flags: "w" });
   debugStream.on("error", () => {
     debugStream = null;
@@ -793,6 +1037,7 @@ function parseDirectArgs(argv) {
 }
 var deliveryAccount = null;
 var notifyAgentId = "main";
+var gatewayClient = new GatewayWsClient({ emit: (obj) => emit(obj) });
 var currentHandNumber = null;
 var warmupDone = Promise.resolve();
 var decisionSeq = 0;
@@ -810,146 +1055,131 @@ var foldedInHand = null;
 function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, context) {
   const mySeq = ++decisionSeq;
   const myHandNumber = currentHandNumber;
-  lastDecision = lastDecision.then(() => warmupDone).then(() => {
+  lastDecision = lastDecision.then(() => warmupDone).then(async () => {
     if (mySeq !== decisionSeq) {
       emit({ type: "DECISION_STALE", skipped: mySeq, current: decisionSeq });
       return;
     }
-    return new Promise((resolve) => {
-      execFile("openclaw", [
-        "agent",
-        "--local",
-        "--agent",
-        notifyAgentId,
-        "--session-id",
-        handSessionId(gameId, myHandNumber),
-        "--message",
-        prompt,
-        "--thinking",
-        "low",
-        "--timeout",
-        "55",
-        "--json"
-      ], { timeout: 65e3 }, (err, stdout) => {
-        if (mySeq !== decisionSeq) {
-          emit({ type: "DECISION_STALE", skipped: mySeq, current: decisionSeq });
-          notifyAgent(channel, chatId, controlSignals.decisionTimedOut());
-          resolve();
-          return;
+    let agentText = "";
+    try {
+      const sessionKey = `agent:${notifyAgentId}:subagent:${handSessionId(gameId, myHandNumber)}`;
+      const result = await gatewayClient.callAgent({
+        agentId: notifyAgentId,
+        sessionKey,
+        sessionId: handSessionId(gameId, myHandNumber),
+        message: prompt,
+        thinking: "low",
+        timeout: 55
+      }, 65e3);
+      agentText = [...result.payloads || []].reverse().find((p) => p.text)?.text || "";
+    } catch (err) {
+      if (mySeq !== decisionSeq) {
+        emit({ type: "DECISION_STALE", skipped: mySeq, current: decisionSeq });
+        notifyAgent(channel, chatId, controlSignals.decisionTimedOut());
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      consecutiveDecisionFailures++;
+      emit({ type: "DECISION_FAILURE", consecutive: consecutiveDecisionFailures, error: msg });
+      if (consecutiveDecisionFailures >= MAX_CONSECUTIVE_FAILURES && onFatalDecisionFailure) {
+        const reason = `${consecutiveDecisionFailures} consecutive decision failures`;
+        await notifyAgent(channel, chatId, controlSignals.decisionFailureExit(consecutiveDecisionFailures));
+        onFatalDecisionFailure(reason);
+        return;
+      }
+      notifyAgent(channel, chatId, controlSignals.decisionAutoFolded());
+      return;
+    }
+    if (mySeq !== decisionSeq) {
+      emit({ type: "DECISION_STALE", skipped: mySeq, current: decisionSeq });
+      notifyAgent(channel, chatId, controlSignals.decisionTimedOut());
+      return;
+    }
+    let decision;
+    try {
+      const decStart = agentText.indexOf("{");
+      const decEnd = agentText.lastIndexOf("}");
+      if (decStart >= 0 && decEnd > decStart) {
+        decision = JSON.parse(agentText.slice(decStart, decEnd + 1));
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      emit({ type: "DECISION_PARSE_ERROR", error: msg, agentText: agentText.slice(0, 300) });
+    }
+    if (decision) {
+      debug("DECISION_RESPONSE", { hand: myHandNumber, decision, rawAgentText: agentText.slice(0, 500) });
+    }
+    if (!decision?.action) {
+      consecutiveDecisionFailures++;
+      emit({ type: "DECISION_FAILURE", consecutive: consecutiveDecisionFailures, reason: "no_action", agentText: agentText.slice(0, 300) });
+      if (consecutiveDecisionFailures >= MAX_CONSECUTIVE_FAILURES && onFatalDecisionFailure) {
+        const reason = `${consecutiveDecisionFailures} consecutive decision failures`;
+        await notifyAgent(channel, chatId, controlSignals.decisionFailureExit(consecutiveDecisionFailures));
+        onFatalDecisionFailure(reason);
+        return;
+      }
+      notifyAgent(channel, chatId, controlSignals.decisionAutoFolded());
+      return;
+    }
+    consecutiveDecisionFailures = 0;
+    if (decision.action === "fold") {
+      foldedInHand = myHandNumber;
+    }
+    if (currentHandNumber !== myHandNumber) {
+      emit({ type: "DECISION_STALE_HAND", decidedHand: myHandNumber, currentHand: currentHandNumber, action: decision.action });
+      notifyAgent(channel, chatId, controlSignals.decisionStaleHand(decision.action));
+      return;
+    }
+    const body = {
+      action: decision.action
+    };
+    if (decision.amount != null) body.amount = decision.amount;
+    if (decision.narration) body.reasoning = decision.narration;
+    try {
+      const resp = await fetch(`${backendUrl}/api/me/game/action`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5e3)
+      });
+      debug("ACTION_SUBMITTED", { hand: myHandNumber, action: decision.action, amount: decision.amount, narration: decision.narration, status: resp.status });
+      if (resp.ok) {
+        if (decision.narration) {
+          recentEvents.push(decision.narration);
+          if (recentEvents.length > 20) recentEvents.shift();
         }
-        if (err) {
-          consecutiveDecisionFailures++;
-          emit({ type: "DECISION_FAILURE", consecutive: consecutiveDecisionFailures, error: err.message });
-          if (consecutiveDecisionFailures >= MAX_CONSECUTIVE_FAILURES && onFatalDecisionFailure) {
-            const reason = `${consecutiveDecisionFailures} consecutive decision failures`;
-            notifyAgent(channel, chatId, controlSignals.decisionFailureExit(consecutiveDecisionFailures)).finally(() => onFatalDecisionFailure(reason));
-            resolve();
-            return;
-          }
-          notifyAgent(channel, chatId, controlSignals.decisionAutoFolded());
-          resolve();
-          return;
-        }
-        let decision;
-        try {
-          stdout = stdout.replace(/^[^\n{]*\n/, "");
-          const jsonStart = stdout.indexOf("{");
-          const jsonEnd = stdout.lastIndexOf("}");
-          const json = jsonStart >= 0 && jsonEnd > jsonStart ? stdout.slice(jsonStart, jsonEnd + 1) : stdout;
-          const result = JSON.parse(json);
-          const payloads = result?.payloads || result?.result?.payloads || [];
-          const agentText = payloads.findLast((p) => p.text)?.text || "";
-          const decStart = agentText.indexOf("{");
-          const decEnd = agentText.lastIndexOf("}");
-          if (decStart >= 0 && decEnd > decStart) {
-            decision = JSON.parse(agentText.slice(decStart, decEnd + 1));
-          }
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          emit({ type: "DECISION_PARSE_ERROR", error: msg, stdout: stdout.slice(0, 300) });
-        }
-        if (decision) {
-          debug("DECISION_RESPONSE", { hand: myHandNumber, decision, rawAgentText: stdout.slice(0, 500) });
-        }
-        if (!decision?.action) {
-          consecutiveDecisionFailures++;
-          emit({ type: "DECISION_FAILURE", consecutive: consecutiveDecisionFailures, reason: "no_action", stdout: stdout.slice(0, 300) });
-          if (consecutiveDecisionFailures >= MAX_CONSECUTIVE_FAILURES && onFatalDecisionFailure) {
-            const reason = `${consecutiveDecisionFailures} consecutive decision failures`;
-            notifyAgent(channel, chatId, controlSignals.decisionFailureExit(consecutiveDecisionFailures)).finally(() => onFatalDecisionFailure(reason));
-            resolve();
-            return;
-          }
-          notifyAgent(channel, chatId, controlSignals.decisionAutoFolded());
-          resolve();
-          return;
-        }
-        consecutiveDecisionFailures = 0;
-        if (decision.action === "fold") {
-          foldedInHand = myHandNumber;
-        }
-        if (currentHandNumber !== myHandNumber) {
-          emit({ type: "DECISION_STALE_HAND", decidedHand: myHandNumber, currentHand: currentHandNumber, action: decision.action });
-          notifyAgent(channel, chatId, controlSignals.decisionStaleHand(decision.action));
-          resolve();
-          return;
-        }
-        const body = {
-          action: decision.action
-        };
-        if (decision.amount != null) body.amount = decision.amount;
-        if (decision.narration) body.reasoning = decision.narration;
-        fetch(`${backendUrl}/api/me/game/action`, {
+      } else {
+        context.lastTurnKey = null;
+        const reason = await resp.text().catch(() => null);
+        emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason });
+        notifyAgent(channel, chatId, controlSignals.actionRejected(resp.status, reason || "unknown reason"));
+      }
+    } catch (actionErr) {
+      const actionErrMsg = actionErr instanceof Error ? actionErr.message : String(actionErr);
+      emit({ type: "ACTION_SUBMIT_ERROR", error: actionErrMsg, action: decision.action });
+      await new Promise((r) => setTimeout(r, 3e3));
+      try {
+        const retryResp = await fetch(`${backendUrl}/api/me/game/action`, {
           method: "POST",
           headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(5e3)
-        }).then((resp) => {
-          debug("ACTION_SUBMITTED", { hand: myHandNumber, action: decision.action, amount: decision.amount, narration: decision.narration, status: resp.status });
-          if (resp.ok) {
-            if (decision.narration) {
-              recentEvents.push(decision.narration);
-              if (recentEvents.length > 20) recentEvents.shift();
-            }
-          } else {
-            context.lastTurnKey = null;
-            resp.text().then((reason) => {
-              emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason });
-              notifyAgent(channel, chatId, controlSignals.actionRejected(resp.status, reason || "unknown reason"));
-            }).catch(() => {
-              emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason: null });
-              notifyAgent(channel, chatId, controlSignals.actionRejectedNoReason(resp.status));
-            });
-          }
-        }).catch(async (actionErr) => {
-          emit({ type: "ACTION_SUBMIT_ERROR", error: actionErr.message, action: decision.action });
-          await new Promise((r) => setTimeout(r, 3e3));
-          try {
-            const retryResp = await fetch(`${backendUrl}/api/me/game/action`, {
-              method: "POST",
-              headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-              signal: AbortSignal.timeout(1e4)
-            });
-            if (retryResp.ok) {
-              emit({ type: "ACTION_RETRY_OK", action: decision.action });
-              if (decision.narration) {
-                recentEvents.push(decision.narration);
-                if (recentEvents.length > 20) recentEvents.shift();
-              }
-            } else {
-              emit({ type: "ACTION_RETRY_REJECTED", status: retryResp.status, action: decision.action });
-            }
-          } catch (retryErr) {
-            const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-            emit({ type: "ACTION_RETRY_FAILED", error: retryMsg, action: decision.action });
-          }
-          context.lastTurnKey = null;
-        }).finally(() => {
-          resolve();
+          signal: AbortSignal.timeout(1e4)
         });
-      });
-    });
+        if (retryResp.ok) {
+          emit({ type: "ACTION_RETRY_OK", action: decision.action });
+          if (decision.narration) {
+            recentEvents.push(decision.narration);
+            if (recentEvents.length > 20) recentEvents.shift();
+          }
+        } else {
+          emit({ type: "ACTION_RETRY_REJECTED", status: retryResp.status, action: decision.action });
+        }
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        emit({ type: "ACTION_RETRY_FAILED", error: retryMsg, action: decision.action });
+      }
+      context.lastTurnKey = null;
+    }
   }).catch((e) => {
     const msg = e instanceof Error ? e.message : String(e);
     emit({ type: "DECISION_CHAIN_ERROR", error: msg });
@@ -957,7 +1187,7 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
 }
 function readHandNotes() {
   try {
-    return readFileSync2(join2(SKILL_ROOT, "poker-hand-notes.txt"), "utf8").trim();
+    return readFileSync3(join3(SKILL_ROOT, "poker-hand-notes.txt"), "utf8").trim();
   } catch {
     return "";
   }
@@ -1008,10 +1238,10 @@ process.on("unhandledRejection", (reason) => {
   debugStream?.end();
   process.exit(1);
 });
-var INSIGHTS_FILE = join2(SKILL_ROOT, "poker-session-insights.txt");
+var INSIGHTS_FILE = join3(SKILL_ROOT, "poker-session-insights.txt");
 function readSessionInsights() {
   try {
-    return readFileSync2(INSIGHTS_FILE, "utf8").trim();
+    return readFileSync3(INSIGHTS_FILE, "utf8").trim();
   } catch {
     return "";
   }
@@ -1042,6 +1272,12 @@ async function main() {
   deliveryAccount = direct.account ?? config.accountId ?? null;
   notifyAgentId = config.agentId ?? "main";
   emit({ type: "DELIVERY_MODE", channel, chatId: "***", account: deliveryAccount ?? "default", agentId: notifyAgentId });
+  try {
+    await gatewayClient.connect();
+  } catch (gwErr) {
+    const msg = gwErr instanceof Error ? gwErr.message : String(gwErr);
+    emit({ type: "GW_CONNECT_FAILED", error: msg });
+  }
   const sseUrl = `${backendUrl}/api/me/game/stream?token=${apiKey}`;
   let EventSourceClass;
   try {
@@ -1117,6 +1353,7 @@ async function main() {
     if (exitInProgress) return;
     exitInProgress = true;
     clearInterval(heartbeatCheck);
+    gatewayClient.stop();
     debugStream?.end();
     const isRebuyState = exitCode !== 0 && context.prevState?.canRebuy === true && context.prevState?.yourChips === 0;
     const finalStack = context.prevState?.yourChips ?? "unknown";
@@ -1166,11 +1403,11 @@ async function main() {
       if (sseFirstConnect) {
         sseFirstConnect = false;
         try {
-          unlinkSync(join2(SKILL_ROOT, "poker-notes.txt"));
+          unlinkSync(join3(SKILL_ROOT, "poker-notes.txt"));
         } catch {
         }
         try {
-          unlinkSync(join2(SKILL_ROOT, "poker-hand-notes.txt"));
+          unlinkSync(join3(SKILL_ROOT, "poker-hand-notes.txt"));
         } catch {
         }
         try {
@@ -1178,22 +1415,15 @@ async function main() {
         } catch {
         }
         debug("SESSION_WARMUP", { gameId });
-        warmupDone = new Promise((resolve) => {
-          execFile("openclaw", [
-            "agent",
-            "--local",
-            "--agent",
-            notifyAgentId,
-            "--session-id",
-            handSessionId(gameId, 1),
-            "--message",
-            WARMUP_MESSAGE,
-            "--thinking",
-            "low",
-            "--timeout",
-            "15",
-            "--json"
-          ], { timeout: 2e4 }, () => resolve());
+        warmupDone = gatewayClient.callAgent({
+          agentId: notifyAgentId,
+          sessionKey: `agent:${notifyAgentId}:subagent:${handSessionId(gameId, 1)}`,
+          sessionId: handSessionId(gameId, 1),
+          message: WARMUP_MESSAGE,
+          thinking: "low",
+          timeout: 15
+        }, 2e4).then(() => {
+        }).catch(() => {
         });
       } else {
         emit({ type: "SSE_RECONNECT" });
@@ -1217,53 +1447,35 @@ async function main() {
             const currentInsights = readSessionInsights() || "No session insights yet.";
             const reflectionPrompt = buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights);
             debug("REFLECTION_PROMPT", { hand: view.handNumber, prompt: reflectionPrompt });
-            warmupDone = new Promise((resolve) => {
-              execFile("openclaw", [
-                "agent",
-                "--local",
-                "--agent",
-                notifyAgentId,
-                "--session-id",
-                handSessionId(gameId, view.handNumber),
-                "--message",
-                reflectionPrompt,
-                "--timeout",
-                "12",
-                "--json"
-              ], { timeout: 18e3 }, (err, stdout) => {
-                if (!err && stdout) {
-                  try {
-                    stdout = stdout.replace(/^[^\n{]*\n/, "");
-                    const jsonStart = stdout.indexOf("{");
-                    const jsonEnd = stdout.lastIndexOf("}");
-                    const json = jsonStart >= 0 && jsonEnd > jsonStart ? stdout.slice(jsonStart, jsonEnd + 1) : stdout;
-                    const result = JSON.parse(json);
-                    const payloads = result?.payloads || result?.result?.payloads || [];
-                    const agentText = payloads.findLast((p) => p.text)?.text || "";
-                    const innerStart = agentText.indexOf("{");
-                    const innerEnd = agentText.lastIndexOf("}");
-                    if (innerStart >= 0 && innerEnd > innerStart) {
-                      const parsed = JSON.parse(agentText.slice(innerStart, innerEnd + 1));
-                      if (parsed.insights && typeof parsed.insights === "string") {
-                        writeSessionInsights(parsed.insights.trim());
-                        debug("REFLECTION_RESPONSE", { hand: view.handNumber, insights: parsed.insights.trim(), rawAgentText: agentText.slice(0, 500) });
-                        emit({ type: "SESSION_INSIGHTS_UPDATED", hand: view.handNumber });
-                      }
-                    }
-                  } catch (e) {
-                    const msg = e instanceof Error ? e.message : String(e);
-                    emit({ type: "SESSION_INSIGHTS_PARSE_ERROR", error: msg });
-                  }
+            const reflectionHandNumber = view.handNumber;
+            warmupDone = gatewayClient.callAgent({
+              agentId: notifyAgentId,
+              sessionKey: `agent:${notifyAgentId}:subagent:${handSessionId(gameId, reflectionHandNumber)}`,
+              sessionId: handSessionId(gameId, reflectionHandNumber),
+              message: reflectionPrompt,
+              timeout: 12
+            }, 18e3).then((result) => {
+              const agentText = [...result.payloads || []].reverse().find((p) => p.text)?.text || "";
+              const innerStart = agentText.indexOf("{");
+              const innerEnd = agentText.lastIndexOf("}");
+              if (innerStart >= 0 && innerEnd > innerStart) {
+                const parsed = JSON.parse(agentText.slice(innerStart, innerEnd + 1));
+                if (parsed.insights && typeof parsed.insights === "string") {
+                  writeSessionInsights(parsed.insights.trim());
+                  debug("REFLECTION_RESPONSE", { hand: reflectionHandNumber, insights: parsed.insights.trim(), rawAgentText: agentText.slice(0, 500) });
+                  emit({ type: "SESSION_INSIGHTS_UPDATED", hand: reflectionHandNumber });
                 }
-                resolve();
-              });
+              }
+            }).catch((e) => {
+              const msg = e instanceof Error ? e.message : String(e);
+              emit({ type: "SESSION_INSIGHTS_PARSE_ERROR", error: msg });
             });
           }
           stackBeforeHand = view.yourChips;
           currentHandEvents = [];
           foldedInHand = null;
           try {
-            unlinkSync(join2(SKILL_ROOT, "poker-hand-notes.txt"));
+            unlinkSync(join3(SKILL_ROOT, "poker-hand-notes.txt"));
           } catch {
           }
         }
