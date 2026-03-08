@@ -713,6 +713,7 @@ var GatewayWsClient = class {
   connectReject = null;
   reconnectTimer = null;
   backoffMs = 1e3;
+  wasEverConnected = false;
   nonce = null;
   challengeTimer = null;
   emitFn = null;
@@ -773,10 +774,16 @@ var GatewayWsClient = class {
       this.connected = false;
       this.ws = null;
       this.flushPending(new Error("Gateway connection closed"));
-      if (wasConnected && !this.closed) {
+      if (!this.closed && (wasConnected || this.wasEverConnected)) {
+        this.connectPromise = null;
+        this.connectResolve = null;
+        this.connectReject = null;
         this.scheduleReconnect();
       } else if (!wasConnected) {
         this.connectReject?.(new Error("Gateway connection closed before auth"));
+        this.connectPromise = null;
+        this.connectResolve = null;
+        this.connectReject = null;
       }
     };
     this.ws.onerror = () => {
@@ -826,6 +833,7 @@ var GatewayWsClient = class {
     }
     this.request("connect", params, { timeoutMs: 5e3 }).then(() => {
       this.connected = true;
+      this.wasEverConnected = true;
       if (this.challengeTimer) {
         clearTimeout(this.challengeTimer);
         this.challengeTimer = null;
@@ -1417,8 +1425,8 @@ async function main() {
         debug("SESSION_WARMUP", { gameId });
         warmupDone = gatewayClient.callAgent({
           agentId: notifyAgentId,
-          sessionKey: `agent:${notifyAgentId}:subagent:${handSessionId(gameId, 1)}`,
-          sessionId: handSessionId(gameId, 1),
+          sessionKey: `agent:${notifyAgentId}:subagent:poker-warmup`,
+          sessionId: "poker-warmup",
           message: WARMUP_MESSAGE,
           thinking: "low",
           timeout: 15
