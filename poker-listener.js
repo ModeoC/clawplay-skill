@@ -171,7 +171,7 @@ var init_dist2 = __esm({
        * @param inspect - The inspect function to use (prevents having to import it from `util`)
        * @returns A string representation of the error
        */
-      [/* @__PURE__ */ Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
+      [Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
         return inspect(inspectableError(this), options);
       }
       /**
@@ -185,7 +185,7 @@ var init_dist2 = __esm({
        * @param options - The options passed to `Deno.inspect`
        * @returns A string representation of the error
        */
-      [/* @__PURE__ */ Symbol.for("Deno.customInspect")](inspect, options) {
+      [Symbol.for("Deno.customInspect")](inspect, options) {
         return inspect(inspectableError(this), options);
       }
     };
@@ -713,7 +713,6 @@ var GatewayWsClient = class {
   connectReject = null;
   reconnectTimer = null;
   backoffMs = 1e3;
-  wasEverConnected = false;
   nonce = null;
   challengeTimer = null;
   emitFn = null;
@@ -774,16 +773,10 @@ var GatewayWsClient = class {
       this.connected = false;
       this.ws = null;
       this.flushPending(new Error("Gateway connection closed"));
-      if (!this.closed && (wasConnected || this.wasEverConnected)) {
-        this.connectPromise = null;
-        this.connectResolve = null;
-        this.connectReject = null;
+      if (wasConnected && !this.closed) {
         this.scheduleReconnect();
       } else if (!wasConnected) {
         this.connectReject?.(new Error("Gateway connection closed before auth"));
-        this.connectPromise = null;
-        this.connectResolve = null;
-        this.connectReject = null;
       }
     };
     this.ws.onerror = () => {
@@ -833,7 +826,6 @@ var GatewayWsClient = class {
     }
     this.request("connect", params, { timeoutMs: 5e3 }).then(() => {
       this.connected = true;
-      this.wasEverConnected = true;
       if (this.challengeTimer) {
         clearTimeout(this.challengeTimer);
         this.challengeTimer = null;
@@ -1157,10 +1149,17 @@ function sendDecision(channel, chatId, gameId, prompt, backendUrl, apiKey, conte
           if (recentEvents.length > 20) recentEvents.shift();
         }
       } else {
-        context.lastTurnKey = null;
         const reason = await resp.text().catch(() => null);
         emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason });
-        notifyAgent(channel, chatId, controlSignals.actionRejected(resp.status, reason || "unknown reason"));
+        if (resp.status === 429) {
+          const retryAfter = parseInt(resp.headers.get("retry-after") || "0", 10);
+          const backoffMs = Math.max(retryAfter * 1e3, 5e3);
+          emit({ type: "ACTION_THROTTLED", backoffMs, action: decision.action });
+          await new Promise((r) => setTimeout(r, backoffMs));
+        } else {
+          notifyAgent(channel, chatId, controlSignals.actionRejected(resp.status, reason || "unknown reason"));
+        }
+        context.lastTurnKey = null;
       }
     } catch (actionErr) {
       const actionErrMsg = actionErr instanceof Error ? actionErr.message : String(actionErr);
@@ -1425,8 +1424,8 @@ async function main() {
         debug("SESSION_WARMUP", { gameId });
         warmupDone = gatewayClient.callAgent({
           agentId: notifyAgentId,
-          sessionKey: `agent:${notifyAgentId}:subagent:poker-warmup`,
-          sessionId: "poker-warmup",
+          sessionKey: `agent:${notifyAgentId}:subagent:${handSessionId(gameId, 1)}`,
+          sessionId: handSessionId(gameId, 1),
           message: WARMUP_MESSAGE,
           thinking: "low",
           timeout: 15
