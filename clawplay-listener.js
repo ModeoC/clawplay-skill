@@ -707,7 +707,6 @@ var GatewayWsClient = class {
       }
     }, 5e3);
     this.ws.onopen = () => {
-      this.backoffMs = 1e3;
       this.emit({ type: "GW_WS_OPEN" });
     };
     this.ws.onmessage = (event) => {
@@ -727,6 +726,7 @@ var GatewayWsClient = class {
       this.ws = null;
       this.flushPending(new Error("Gateway connection closed"));
       if (!this.closed && (wasConnected || this.wasEverConnected)) {
+        this.connectReject?.(new Error("Gateway connection closed during reconnect"));
         this.connectPromise = null;
         this.connectResolve = null;
         this.connectReject = null;
@@ -786,6 +786,7 @@ var GatewayWsClient = class {
     this.request("connect", params, { timeoutMs: 5e3 }).then(() => {
       this.connected = true;
       this.wasEverConnected = true;
+      this.backoffMs = 1e3;
       if (this.challengeTimer) {
         clearTimeout(this.challengeTimer);
         this.challengeTimer = null;
@@ -824,7 +825,15 @@ var GatewayWsClient = class {
   }
   /** Call the agent RPC method. Handles two-phase response. */
   async callAgent(params, timeoutMs = 6e4) {
-    if (!this.connected) await this.connect();
+    if (!this.connected) {
+      try {
+        await this.connect();
+      } catch {
+        this.emit({ type: "GW_CALLAGENT_RETRY" });
+        await new Promise((r) => setTimeout(r, 1e3));
+        await this.connect();
+      }
+    }
     const rpcParams = {
       message: params.message,
       idempotencyKey: params.idempotencyKey ?? randomUUID()

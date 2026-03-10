@@ -408,6 +408,181 @@ describe('GatewayWsClient', () => {
       expect(reconnect!.delayMs).toBe(1000);
     });
 
+    it('rejects orphaned connect promise on failed reconnect attempt', async () => {
+      const client = new GatewayWsClient();
+
+      // Initial connect
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      // Simulate connection drop → triggers scheduleReconnect
+      mockWsInstance.onclose?.();
+
+      // Advance past backoff to trigger reconnect attempt
+      await vi.advanceTimersByTimeAsync(1001);
+
+      // New WS opens, but then immediately closes (gateway not ready)
+      // The onclose should reject the reconnect's connectPromise (not hang)
+      mockWsInstance.onclose?.();
+
+      // Should still schedule another reconnect (not be stuck)
+      await vi.advanceTimersByTimeAsync(2001); // 2s backoff
+      // A third WS should have been created
+      expect(mockWsConstructorCalls.length).toBeGreaterThanOrEqual(3);
+
+      client.stop();
+    });
+
+    it('does not reset backoff on TCP connect — only after auth', async () => {
+      const emitted: Record<string, unknown>[] = [];
+      const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });
+
+      // Initial connect
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      // Drop connection
+      mockWsInstance.onclose?.();
+      emitted.length = 0;
+
+      // First reconnect at 1000ms
+      await vi.advanceTimersByTimeAsync(1001);
+      // TCP opens (onopen fires) but then connection closes before auth
+      mockWsInstance.onclose?.();
+
+      // Second reconnect should be at 2000ms (doubled), not 1000ms (reset)
+      const reconnects = emitted.filter(e => e.type === 'GW_RECONNECT');
+      // The second GW_RECONNECT should have delayMs > 1000
+      expect(reconnects.length).toBeGreaterThanOrEqual(1);
+      const lastReconnect = reconnects[reconnects.length - 1];
+      expect(lastReconnect.delayMs).toBeGreaterThan(1000);
+
+      client.stop();
+    });
+
+    it('callAgent retries connect once on failure', async () => {
+      const client = new GatewayWsClient();
+
+      // First connect attempt — simulate immediate close (gateway not up)
+      const callPromise = client.callAgent({ message: 'decide' }, 10000);
+
+      // First WS opens
+      await vi.advanceTimersByTimeAsync(1);
+      // Simulate immediate close (gateway refuses)
+      mockWsInstance.onclose?.();
+
+      // callAgent catch block waits 1000ms then retries
+      await vi.advanceTimersByTimeAsync(1001);
+
+      // Second WS opens — this time succeed
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(
+        mockWsInstance.send.mock.calls.find(
+          (c: string[]) => JSON.parse(c[0]).method === 'connect',
+        )![0],
+      );
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+
+      // Agent call goes out
+      await vi.advanceTimersByTimeAsync(1);
+      const agentFrame = JSON.parse(
+        mockWsInstance.send.mock.calls.find(
+          (c: string[]) => JSON.parse(c[0]).method === 'agent',
+        )![0],
+      );
+      sendAgentResponse(mockWsInstance, agentFrame.id, [{ text: '{"action":"fold"}' }]);
+
+      const result = await callPromise;
+      expect(result.payloads[0].text).toBe('{"action":"fold"}');
+    });
+
+    it('reconnects successfully after gateway restart', async () => {
+      const emitted: Record<string, unknown>[] = [];
+      const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });
+
+      // Initial connect
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      // Simulate gateway restart — connection drops
+      mockWsInstance.onclose?.();
+
+      // Advance past backoff to trigger reconnect
+      await vi.advanceTimersByTimeAsync(1001);
+
+      // New WS opens — gateway is back
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance, 'new-nonce');
+      const reconnectFrame = JSON.parse(
+        mockWsInstance.send.mock.calls.find(
+          (c: string[]) => {
+            try {
+              const f = JSON.parse(c[0]);
+              return f.method === 'connect' && f.id !== connectFrame.id;
+            } catch { return false; }
+          },
+        )![0],
+      );
+      sendConnectResponse(mockWsInstance, reconnectFrame.id);
+
+      // Wait for promise resolution
+      await vi.advanceTimersByTimeAsync(1);
+
+      // Verify we're connected and can make calls
+      expect(emitted.filter(e => e.type === 'GW_CONNECTED')).toHaveLength(2);
+
+      // callAgent should work
+      mockWsInstance.send.mockClear();
+      const callPromise = client.callAgent({ message: 'test' }, 5000);
+      const agentFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendAgentResponse(mockWsInstance, agentFrame.id, [{ text: 'ok' }]);
+      const result = await callPromise;
+      expect(result.payloads[0].text).toBe('ok');
+
+      client.stop();
+    });
+
+    it('callAgent emits GW_CALLAGENT_RETRY and propagates error when both attempts fail', async () => {
+      const emitted: Record<string, unknown>[] = [];
+      const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });
+
+      // First connect attempt — immediate close
+      const callPromise = client.callAgent({ message: 'decide' }, 10000);
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      mockWsInstance.onclose?.();
+
+      // Let the catch block in callAgent run (microtask propagation)
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Should emit retry event
+      expect(emitted.some(e => e.type === 'GW_CALLAGENT_RETRY')).toBe(true);
+
+      // Advance past the 1s retry delay
+      await vi.advanceTimersByTimeAsync(1001);
+
+      // Second connect attempt — also fails
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      mockWsInstance.onclose?.();
+
+      // Should propagate the error to the caller
+      await expect(callPromise).rejects.toThrow();
+
+      client.stop();
+    });
+
     it('emits events for observability', async () => {
       const emitted: Record<string, unknown>[] = [];
       const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });

@@ -133,7 +133,6 @@ export class GatewayWsClient {
     }, 5000);
 
     this.ws.onopen = () => {
-      this.backoffMs = 1000;
       this.emit({ type: 'GW_WS_OPEN' });
     };
 
@@ -153,6 +152,8 @@ export class GatewayWsClient {
 
       if (!this.closed && (wasConnected || this.wasEverConnected)) {
         // Drop after active connection OR failed reconnect attempt → keep retrying
+        // Reject any outstanding connect promise so callers don't hang
+        this.connectReject?.(new Error('Gateway connection closed during reconnect'));
         this.connectPromise = null;
         this.connectResolve = null;
         this.connectReject = null;
@@ -227,6 +228,7 @@ export class GatewayWsClient {
       .then(() => {
         this.connected = true;
         this.wasEverConnected = true;
+        this.backoffMs = 1000; // Reset backoff only after successful auth
         if (this.challengeTimer) { clearTimeout(this.challengeTimer); this.challengeTimer = null; }
         this.connectResolve?.();
         this.connectPromise = null;
@@ -273,7 +275,16 @@ export class GatewayWsClient {
 
   /** Call the agent RPC method. Handles two-phase response. */
   async callAgent(params: AgentCallParams, timeoutMs = 60_000): Promise<AgentCallResult> {
-    if (!this.connected) await this.connect();
+    if (!this.connected) {
+      try {
+        await this.connect();
+      } catch {
+        // First connect attempt failed — try once more after a short delay
+        this.emit({ type: 'GW_CALLAGENT_RETRY' });
+        await new Promise(r => setTimeout(r, 1000));
+        await this.connect();
+      }
+    }
 
     const rpcParams: Record<string, unknown> = {
       message: params.message,
