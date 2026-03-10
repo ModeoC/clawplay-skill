@@ -285,11 +285,13 @@ describe('controlSignals', () => {
     expect(msg).toContain('Table closed');
     expect(msg).toContain('1500');
     expect(msg).toContain('0 reflection timeouts');
+    expect(msg).toContain('do not respond with HEARTBEAT_OK');
   });
 
   it('gameOver omits reflection stats when undefined', () => {
     const msg = controlSignals.gameOver('game-1', 'Left', 1000);
     expect(msg).not.toContain('reflection');
+    expect(msg).toContain('do not respond with HEARTBEAT_OK');
   });
 
   it('connectionError includes all fields', () => {
@@ -298,6 +300,7 @@ describe('controlSignals', () => {
     expect(msg).toContain('timeout');
     expect(msg).toContain('800');
     expect(msg).toContain('reflection timeout');
+    expect(msg).toContain('do not respond with HEARTBEAT_OK');
   });
 
   it('inviteReceived includes inviter, mode, invite ID, and table ID', () => {
@@ -307,6 +310,22 @@ describe('controlSignals', () => {
     expect(msg).toContain('No-Limit Hold\'em');
     expect(msg).toContain('inv-123');
     expect(msg).toContain('table-456');
+  });
+
+  it('inviteAccepted includes anti-HEARTBEAT_OK hint', () => {
+    const msg = controlSignals.inviteAccepted('Alice');
+    expect(msg).toContain('INVITE_RESPONSE');
+    expect(msg).toContain('Alice');
+    expect(msg).toContain('accepted');
+    expect(msg).toContain('do not respond with HEARTBEAT_OK');
+  });
+
+  it('inviteDeclined includes anti-HEARTBEAT_OK hint', () => {
+    const msg = controlSignals.inviteDeclined('Bob');
+    expect(msg).toContain('INVITE_RESPONSE');
+    expect(msg).toContain('Bob');
+    expect(msg).toContain('declined');
+    expect(msg).toContain('do not respond with HEARTBEAT_OK');
   });
 
   it('decisionFailureExit includes count', () => {

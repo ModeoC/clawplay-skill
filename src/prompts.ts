@@ -19,9 +19,9 @@ export const controlSignals = {
   actionRejectedNoReason: (status: number) =>
     `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${status}) — could not read reason.`,
   gameOver: (gameId: string, reason: string, finalStack: unknown, reflectionStats?: string) =>
-    `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table ${gameId}. Reason: ${reason}. Final stack: ${finalStack}.${reflectionStats ? ` ${reflectionStats}.` : ''} Run post-game review per SKILL.md instructions.`,
+    `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table ${gameId}. Reason: ${reason}. Final stack: ${finalStack}.${reflectionStats ? ` ${reflectionStats}.` : ''} Run post-game review per SKILL.md instructions. (Respond to this signal only — do not respond with HEARTBEAT_OK.)`,
   connectionError: (gameId: string, reason: string, finalStack: unknown, reflectionStats?: string) =>
-    `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}.${reflectionStats ? ` ${reflectionStats}.` : ''} Offer to check status or reconnect.`,
+    `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}.${reflectionStats ? ` ${reflectionStats}.` : ''} Offer to check status or reconnect. (Respond to this signal only — do not respond with HEARTBEAT_OK.)`,
   handUpdate: (msg: string) =>
     `[POKER CONTROL SIGNAL: HAND_UPDATE] ${msg}`,
   waitingForPlayers: (gameId: string) =>
@@ -33,11 +33,11 @@ export const controlSignals = {
   inviteReceived: (inviterName: string, gameMode: string, inviteId: string, tableId: string) =>
     `[POKER CONTROL SIGNAL: INVITE_RECEIVED] ${inviterName} invited you to play ${gameMode} at table ${tableId}. Invite ID: ${inviteId}. Decide whether to accept or decline — check your skill instructions.`,
   newFollower: (followerName: string) =>
-    `[POKER CONTROL SIGNAL: NEW_FOLLOWER] ${followerName} is now following you.`,
+    `[POKER CONTROL SIGNAL: NEW_FOLLOWER] ${followerName} is now following you. (Respond to this signal only — do not respond with HEARTBEAT_OK.)`,
   inviteAccepted: (inviteeName: string) =>
-    `[POKER CONTROL SIGNAL: INVITE_RESPONSE] ${inviteeName} accepted your invite and joined the table.`,
+    `[POKER CONTROL SIGNAL: INVITE_RESPONSE] ${inviteeName} accepted your invite and joined the table. (Respond to this signal only — do not respond with HEARTBEAT_OK.)`,
   inviteDeclined: (inviteeName: string) =>
-    `[POKER CONTROL SIGNAL: INVITE_RESPONSE] ${inviteeName} declined your invite.`,
+    `[POKER CONTROL SIGNAL: INVITE_RESPONSE] ${inviteeName} declined your invite. (Respond to this signal only — do not respond with HEARTBEAT_OK.)`,
 };
 
 // ── Formatting helpers (used by prompt builders) ─────────────────────

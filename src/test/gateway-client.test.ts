@@ -594,6 +594,137 @@ describe('GatewayWsClient', () => {
       client.stop();
     });
 
+    it('challenge timeout clears connect state and schedules reconnect (callAgent creates fresh WS)', async () => {
+      const emitted: Record<string, unknown>[] = [];
+      const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });
+
+      // First connect — let challenge timeout fire (no challenge sent)
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      const expectReject = expect(connectPromise).rejects.toThrow('challenge timeout');
+
+      // Advance past the 5s challenge timer
+      await vi.advanceTimersByTimeAsync(5001);
+      await expectReject;
+
+      // connectPromise should be cleared — verify by checking that
+      // a subsequent callAgent creates a fresh WS (not returning stale rejected promise)
+      const wsCountAfterTimeout = mockWsConstructorCalls.length;
+
+      // Advance past the reconnect backoff (1s)
+      await vi.advanceTimersByTimeAsync(1001);
+
+      // A background reconnect WS should have been created
+      expect(mockWsConstructorCalls.length).toBeGreaterThan(wsCountAfterTimeout);
+
+      // Complete the background reconnect
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(
+        mockWsInstance.send.mock.calls.find(
+          (c: string[]) => JSON.parse(c[0]).method === 'connect',
+        )![0],
+      );
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await vi.advanceTimersByTimeAsync(1);
+
+      // Should be connected now
+      expect(client.isConnected()).toBe(true);
+
+      // callAgent should work on the fresh connection
+      mockWsInstance.send.mockClear();
+      const callPromise = client.callAgent({ message: 'decide' }, 5000);
+      const agentFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendAgentResponse(mockWsInstance, agentFrame.id, [{ text: '{"action":"fold"}' }]);
+      const result = await callPromise;
+      expect(result.payloads[0].text).toBe('{"action":"fold"}');
+
+      client.stop();
+    });
+
+    it('challenge timeout does not let stale onclose clobber new connection', async () => {
+      const client = new GatewayWsClient();
+
+      // First connect — challenge timeout fires
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      const firstWs = mockWsInstance;
+      const expectReject = expect(connectPromise).rejects.toThrow('challenge timeout');
+
+      await vi.advanceTimersByTimeAsync(5001);
+      await expectReject;
+
+      // The old WS handlers should be nullified — calling onclose on it should be a no-op
+      // (If not nullified, it would set this.ws = null and break the next connection)
+
+      // Advance past reconnect backoff
+      await vi.advanceTimersByTimeAsync(1001);
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen for new WS
+      const secondWs = mockWsInstance;
+
+      // Simulate the old WS's delayed onclose firing (would happen if close() takes time)
+      // This should be a no-op because handlers were nullified
+      firstWs.onclose?.();
+
+      // The second WS should still be referenced by the client
+      // Verify by completing the auth on it
+      sendChallenge(secondWs);
+      const connectFrame = JSON.parse(
+        secondWs.send.mock.calls.find(
+          (c: string[]) => JSON.parse(c[0]).method === 'connect',
+        )![0],
+      );
+      sendConnectResponse(secondWs, connectFrame.id);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(client.isConnected()).toBe(true);
+      client.stop();
+    });
+
+    it('challenge timeout flushes pending requests so stale reject cannot close new WS', async () => {
+      const client = new GatewayWsClient();
+
+      // Connect — challenge arrives at ~1ms, but connect response never comes
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      sendChallenge(mockWsInstance); // challenge arrives → sendConnectRequest fires
+
+      // A connect request was sent with 5s timeout
+      const connectCall = mockWsInstance.send.mock.calls.find(
+        (c: string[]) => JSON.parse(c[0]).method === 'connect',
+      );
+      expect(connectCall).toBeTruthy();
+
+      // Don't send a connect response — let the challenge timer fire at 5s
+      const expectReject = expect(connectPromise).rejects.toThrow('challenge timeout');
+      await vi.advanceTimersByTimeAsync(5001);
+      await expectReject;
+
+      // Advance past reconnect backoff — new WS is created
+      await vi.advanceTimersByTimeAsync(1001);
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen for new WS
+      const newWs = mockWsInstance;
+
+      // The connect request's 5s timeout would fire at ~6s (1ms + 5000ms)
+      // which has already passed. flushPending should have cleared its timer.
+      // If NOT flushed, the reject would call this.ws?.close() on the new WS.
+
+      // Verify the new WS was NOT closed — complete auth on it
+      sendChallenge(newWs);
+      const reconnectFrame = JSON.parse(
+        newWs.send.mock.calls.find(
+          (c: string[]) => JSON.parse(c[0]).method === 'connect',
+        )![0],
+      );
+      sendConnectResponse(newWs, reconnectFrame.id);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(client.isConnected()).toBe(true);
+      // Verify close was NOT called on the new WS
+      expect(newWs.close).not.toHaveBeenCalled();
+      client.stop();
+    });
+
     it('schedules background reconnect after initial connect failure', async () => {
       const emitted: Record<string, unknown>[] = [];
       const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });

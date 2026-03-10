@@ -121,35 +121,50 @@ export class GatewayWsClient {
     if (this.closed) return;
     this.nonce = null;
 
+    let ws: WebSocket;
     try {
-      this.ws = new WebSocket(this.url);
+      ws = new WebSocket(this.url);
+      this.ws = ws;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.connectReject?.(new Error(`WebSocket create failed: ${msg}`));
       return;
     }
 
-    // Challenge timeout — if we don't get a challenge within 5s, fail
+    // Challenge timeout — if no challenge within 5s, abandon this WS.
+    // Don't wait for onclose (may be delayed if gateway is busy).
     this.challengeTimer = setTimeout(() => {
       this.challengeTimer = null;
-      if (!this._connected) {
-        this.ws?.close();
+      if (!this._connected && this.ws === ws) {
+        // Nullify handlers so stale onclose can't interfere
+        ws.onclose = null;
+        ws.onmessage = null;
+        ws.onopen = null;
+        this.ws = null;
+        ws.close(); // Best-effort close (fire-and-forget)
+        this.flushPending(new Error('Gateway connect challenge timeout'));
         this.connectReject?.(new Error('Gateway connect challenge timeout'));
+        this.connectPromise = null;
+        this.connectResolve = null;
+        this.connectReject = null;
+        if (!this.closed) this.scheduleReconnect();
       }
     }, 5000);
 
-    this.ws.onopen = () => {
+    ws.onopen = () => {
       this.emit({ type: 'GW_WS_OPEN' });
     };
 
-    this.ws.onmessage = (event: MessageEvent) => {
+    ws.onmessage = (event: MessageEvent) => {
+      if (this.ws !== ws) return; // Stale WS, ignore
       try {
         const msg = JSON.parse(String(event.data));
         this.handleMessage(msg);
       } catch {}
     };
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      if (this.ws !== ws) return; // Already abandoned by challenge timer
       if (this.challengeTimer) { clearTimeout(this.challengeTimer); this.challengeTimer = null; }
       this.stopKeepalive();
       const wasConnected = this._connected;
@@ -180,7 +195,7 @@ export class GatewayWsClient {
       }
     };
 
-    this.ws.onerror = () => {
+    ws.onerror = () => {
       // onclose will fire after this
     };
   }
@@ -255,6 +270,9 @@ export class GatewayWsClient {
         this.connectPromise = null;
         this.connectResolve = null;
         this.connectReject = null;
+        // Safe: if the challenge timer already fired, flushPending() rejected this
+        // request synchronously (clearing its timer), so this.ws is null here and
+        // close() is a no-op. The new WS from scheduleReconnect hasn't been created yet.
         this.ws?.close();
       });
   }

@@ -1,4 +1,4 @@
-import { readFileSync, createWriteStream } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, createWriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { WriteStream } from 'node:fs';
@@ -32,6 +32,42 @@ function debug(label: string, data: Record<string, unknown>): void {
     }
   }
   debugStream.write(lines.join('\n') + '\n\n');
+}
+
+// ── PID lock ─────────────────────────────────────────────────────────
+
+let lockFilePath: string | null = null;
+
+/**
+ * Acquires a PID lock file. If a previous listener is still running,
+ * sends SIGTERM and waits briefly for graceful shutdown.
+ */
+export async function acquirePidLock(lockFile: string, emitFn: (obj: Record<string, unknown>) => void): Promise<void> {
+  try {
+    // NaN from corrupted files is falsy, so the `if` below correctly skips kill logic
+    const existingPid = parseInt(readFileSync(lockFile, 'utf8').trim(), 10);
+    if (existingPid && existingPid !== process.pid) {
+      try {
+        process.kill(existingPid, 0); // Check if alive
+        emitFn({ type: 'KILLING_STALE_LISTENER', pid: existingPid });
+        process.kill(existingPid, 'SIGTERM');
+        await new Promise(r => setTimeout(r, 2_000));
+        // Escalate to SIGKILL if still alive (e.g. stuck in sync operation)
+        try {
+          process.kill(existingPid, 0);
+          process.kill(existingPid, 'SIGKILL');
+          await new Promise(r => setTimeout(r, 500));
+        } catch {} // Dead after SIGTERM — good
+      } catch {} // Process already dead — proceed
+    }
+  } catch {} // No lock file — proceed
+
+  writeFileSync(lockFile, String(process.pid));
+}
+
+/** Removes a PID lock file. Safe to call if file doesn't exist. */
+export function releasePidLock(lockFile: string): void {
+  try { unlinkSync(lockFile); } catch {}
 }
 
 // ── Delivery args ────────────────────────────────────────────────────
@@ -177,6 +213,8 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
       const currentVersion = readLocalVersion();
       if (startupVersion !== 'unknown' && currentVersion !== startupVersion) {
         emit({ type: 'VERSION_STALE', startupVersion, currentVersion });
+        es?.close();  // Close SSE before spawning replacement to avoid overlap
+        if (lockFilePath) releasePidLock(lockFilePath); // Release lock so replacement doesn't wait 2s
         const child = spawn(process.execPath, process.argv.slice(1), {
           detached: true,
           stdio: 'ignore',
@@ -574,6 +612,12 @@ async function main(): Promise<void> {
   const chatId = direct.chatId;
   const deliveryAccount = direct.account ?? config.accountId ?? null;
   const agentId = config.agentId ?? 'main';
+
+  // Acquire PID lock — kill any stale listener for this agent
+  lockFilePath = join(SKILL_ROOT, `.clawplay-listener-${agentId}.pid`);
+  await acquirePidLock(lockFilePath, emit);
+  process.on('exit', () => { if (lockFilePath) releasePidLock(lockFilePath); });
+
   const listenerMode = direct.mode ?? config.listenerMode ?? 'lobby';
   const reflectEveryNHands = config.reflectEveryNHands ?? 3;
   const startupVersion = readLocalVersion();

@@ -402,7 +402,7 @@ var init_dist2 = __esm({
 });
 
 // clawplay-listener.ts
-import { readFileSync as readFileSync4, createWriteStream } from "node:fs";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync2, unlinkSync as unlinkSync2, createWriteStream } from "node:fs";
 import { join as join4 } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -490,16 +490,16 @@ var controlSignals = {
   decisionStaleHand: (action) => `[POKER CONTROL SIGNAL: DECISION_STATUS] Hand moved on while deciding \u2014 skipped ${action}.`,
   actionRejected: (status, reason) => `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${status}): ${reason}`,
   actionRejectedNoReason: (status) => `[POKER CONTROL SIGNAL: DECISION_STATUS] Action rejected (${status}) \u2014 could not read reason.`,
-  gameOver: (gameId, reason, finalStack, reflectionStats) => `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table ${gameId}. Reason: ${reason}. Final stack: ${finalStack}.${reflectionStats ? ` ${reflectionStats}.` : ""} Run post-game review per SKILL.md instructions.`,
-  connectionError: (gameId, reason, finalStack, reflectionStats) => `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}.${reflectionStats ? ` ${reflectionStats}.` : ""} Offer to check status or reconnect.`,
+  gameOver: (gameId, reason, finalStack, reflectionStats) => `[POKER CONTROL SIGNAL: GAME_OVER] Game ended on table ${gameId}. Reason: ${reason}. Final stack: ${finalStack}.${reflectionStats ? ` ${reflectionStats}.` : ""} Run post-game review per SKILL.md instructions. (Respond to this signal only \u2014 do not respond with HEARTBEAT_OK.)`,
+  connectionError: (gameId, reason, finalStack, reflectionStats) => `[POKER CONTROL SIGNAL: CONNECTION_ERROR] Lost connection to table ${gameId}. Reason: ${reason}. Last known stack: ${finalStack}.${reflectionStats ? ` ${reflectionStats}.` : ""} Offer to check status or reconnect. (Respond to this signal only \u2014 do not respond with HEARTBEAT_OK.)`,
   handUpdate: (msg) => `[POKER CONTROL SIGNAL: HAND_UPDATE] ${msg}`,
   waitingForPlayers: (gameId) => `[POKER CONTROL SIGNAL: WAITING_FOR_PLAYERS] All opponents left table ${gameId}. Decide whether to wait or leave \u2014 check your skill instructions.`,
   rebuyAvailable: (gameId, amount) => `[POKER CONTROL SIGNAL: REBUY_AVAILABLE] Busted on table ${gameId}. Rebuy available for ${amount} chips. Decide whether to rebuy or leave \u2014 check your skill instructions.`,
   decisionFailureExit: (count) => `[POKER CONTROL SIGNAL: DECISION_STATUS] ${count} consecutive decisions failed (timeout/error) \u2014 listener exiting. The game session may have a file lock or routing issue. Tell the user something went wrong with your decision-making and you had to leave the table.`,
   inviteReceived: (inviterName, gameMode, inviteId, tableId) => `[POKER CONTROL SIGNAL: INVITE_RECEIVED] ${inviterName} invited you to play ${gameMode} at table ${tableId}. Invite ID: ${inviteId}. Decide whether to accept or decline \u2014 check your skill instructions.`,
-  newFollower: (followerName) => `[POKER CONTROL SIGNAL: NEW_FOLLOWER] ${followerName} is now following you.`,
-  inviteAccepted: (inviteeName) => `[POKER CONTROL SIGNAL: INVITE_RESPONSE] ${inviteeName} accepted your invite and joined the table.`,
-  inviteDeclined: (inviteeName) => `[POKER CONTROL SIGNAL: INVITE_RESPONSE] ${inviteeName} declined your invite.`
+  newFollower: (followerName) => `[POKER CONTROL SIGNAL: NEW_FOLLOWER] ${followerName} is now following you. (Respond to this signal only \u2014 do not respond with HEARTBEAT_OK.)`,
+  inviteAccepted: (inviteeName) => `[POKER CONTROL SIGNAL: INVITE_RESPONSE] ${inviteeName} accepted your invite and joined the table. (Respond to this signal only \u2014 do not respond with HEARTBEAT_OK.)`,
+  inviteDeclined: (inviteeName) => `[POKER CONTROL SIGNAL: INVITE_RESPONSE] ${inviteeName} declined your invite. (Respond to this signal only \u2014 do not respond with HEARTBEAT_OK.)`
 };
 function buildSummary(view) {
   const cards = view.yourCards?.length ? formatCards(view.yourCards) : "??";
@@ -697,8 +697,10 @@ var GatewayWsClient = class {
   startConnection() {
     if (this.closed) return;
     this.nonce = null;
+    let ws;
     try {
-      this.ws = new WebSocket(this.url);
+      ws = new WebSocket(this.url);
+      this.ws = ws;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.connectReject?.(new Error(`WebSocket create failed: ${msg}`));
@@ -706,22 +708,33 @@ var GatewayWsClient = class {
     }
     this.challengeTimer = setTimeout(() => {
       this.challengeTimer = null;
-      if (!this._connected) {
-        this.ws?.close();
+      if (!this._connected && this.ws === ws) {
+        ws.onclose = null;
+        ws.onmessage = null;
+        ws.onopen = null;
+        this.ws = null;
+        ws.close();
+        this.flushPending(new Error("Gateway connect challenge timeout"));
         this.connectReject?.(new Error("Gateway connect challenge timeout"));
+        this.connectPromise = null;
+        this.connectResolve = null;
+        this.connectReject = null;
+        if (!this.closed) this.scheduleReconnect();
       }
     }, 5e3);
-    this.ws.onopen = () => {
+    ws.onopen = () => {
       this.emit({ type: "GW_WS_OPEN" });
     };
-    this.ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
       try {
         const msg = JSON.parse(String(event.data));
         this.handleMessage(msg);
       } catch {
       }
     };
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
       if (this.challengeTimer) {
         clearTimeout(this.challengeTimer);
         this.challengeTimer = null;
@@ -748,7 +761,7 @@ var GatewayWsClient = class {
         }
       }
     };
-    this.ws.onerror = () => {
+    ws.onerror = () => {
     };
   }
   handleMessage(msg) {
@@ -1662,6 +1675,35 @@ function debug(label, data) {
   }
   debugStream.write(lines.join("\n") + "\n\n");
 }
+var lockFilePath = null;
+async function acquirePidLock(lockFile, emitFn) {
+  try {
+    const existingPid = parseInt(readFileSync4(lockFile, "utf8").trim(), 10);
+    if (existingPid && existingPid !== process.pid) {
+      try {
+        process.kill(existingPid, 0);
+        emitFn({ type: "KILLING_STALE_LISTENER", pid: existingPid });
+        process.kill(existingPid, "SIGTERM");
+        await new Promise((r) => setTimeout(r, 2e3));
+        try {
+          process.kill(existingPid, 0);
+          process.kill(existingPid, "SIGKILL");
+          await new Promise((r) => setTimeout(r, 500));
+        } catch {
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  writeFileSync2(lockFile, String(process.pid));
+}
+function releasePidLock(lockFile) {
+  try {
+    unlinkSync2(lockFile);
+  } catch {
+  }
+}
 var CHANNEL_ALIASES = /* @__PURE__ */ new Set(["--channel"]);
 var CHAT_ID_ALIASES = /* @__PURE__ */ new Set(["--chat-id", "--target", "--to"]);
 var ACCOUNT_ALIASES = /* @__PURE__ */ new Set(["--account"]);
@@ -1758,6 +1800,8 @@ function runUnifiedMode(config) {
       const currentVersion = readLocalVersion();
       if (startupVersion !== "unknown" && currentVersion !== startupVersion) {
         emit({ type: "VERSION_STALE", startupVersion, currentVersion });
+        es?.close();
+        if (lockFilePath) releasePidLock(lockFilePath);
         const child = spawn(process.execPath, process.argv.slice(1), {
           detached: true,
           stdio: "ignore"
@@ -2025,6 +2069,11 @@ async function main() {
   const chatId = direct.chatId;
   const deliveryAccount = direct.account ?? config.accountId ?? null;
   const agentId = config.agentId ?? "main";
+  lockFilePath = join4(SKILL_ROOT, `.clawplay-listener-${agentId}.pid`);
+  await acquirePidLock(lockFilePath, emit);
+  process.on("exit", () => {
+    if (lockFilePath) releasePidLock(lockFilePath);
+  });
   const listenerMode = direct.mode ?? config.listenerMode ?? "lobby";
   const reflectEveryNHands = config.reflectEveryNHands ?? 3;
   const startupVersion = readLocalVersion();
@@ -2103,6 +2152,8 @@ if (isDirectRun) {
   main();
 }
 export {
+  acquirePidLock,
   parseDirectArgs,
-  processStateEvent
+  processStateEvent,
+  releasePidLock
 };

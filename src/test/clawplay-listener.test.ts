@@ -1,7 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, unlinkSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   processStateEvent,
   parseDirectArgs,
+  acquirePidLock,
+  releasePidLock,
 } from '../clawplay-listener.js';
 import {
   buildDecisionPrompt,
@@ -573,5 +578,82 @@ describe('readNotes', () => {
   it('returns empty string when file is missing', () => {
     const result = readNotes();
     expect(result).toBe('');
+  });
+});
+
+// ─── PID lock ────────────────────────────────────────────────────────
+
+describe('acquirePidLock', () => {
+  let tempDir: string;
+  let lockFile: string;
+
+  afterEach(() => {
+    try { unlinkSync(lockFile); } catch {}
+    try { rmSync(tempDir, { recursive: true }); } catch {}
+  });
+
+  function setup(): void {
+    tempDir = mkdtempSync(join(tmpdir(), 'listener-lock-'));
+    lockFile = join(tempDir, '.clawplay-listener-main.pid');
+  }
+
+  it('writes PID to lock file', async () => {
+    setup();
+    const emitted: Record<string, unknown>[] = [];
+    await acquirePidLock(lockFile, (obj) => emitted.push(obj));
+
+    expect(existsSync(lockFile)).toBe(true);
+    expect(readFileSync(lockFile, 'utf8').trim()).toBe(String(process.pid));
+  });
+
+  it('handles missing lock file gracefully', async () => {
+    setup();
+    const emitted: Record<string, unknown>[] = [];
+    // No pre-existing lock file
+    await acquirePidLock(lockFile, (obj) => emitted.push(obj));
+
+    expect(readFileSync(lockFile, 'utf8').trim()).toBe(String(process.pid));
+    expect(emitted.find(e => e.type === 'KILLING_STALE_LISTENER')).toBeUndefined();
+  });
+
+  it('handles stale lock file (dead PID) gracefully', async () => {
+    setup();
+    writeFileSync(lockFile, '999999999'); // Non-existent PID
+    const emitted: Record<string, unknown>[] = [];
+
+    await acquirePidLock(lockFile, (obj) => emitted.push(obj));
+
+    // Should overwrite with our PID
+    expect(readFileSync(lockFile, 'utf8').trim()).toBe(String(process.pid));
+    // Dead process → no KILLING_STALE_LISTENER (kill(pid, 0) throws ESRCH)
+    expect(emitted.find(e => e.type === 'KILLING_STALE_LISTENER')).toBeUndefined();
+  });
+
+  it('does not kill self when lock file contains own PID', async () => {
+    setup();
+    writeFileSync(lockFile, String(process.pid));
+    const emitted: Record<string, unknown>[] = [];
+
+    await acquirePidLock(lockFile, (obj) => emitted.push(obj));
+
+    expect(emitted.find(e => e.type === 'KILLING_STALE_LISTENER')).toBeUndefined();
+  });
+});
+
+describe('releasePidLock', () => {
+  it('removes lock file', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'listener-lock-'));
+    const lockFile = join(tempDir, '.clawplay-listener-main.pid');
+    writeFileSync(lockFile, String(process.pid));
+
+    releasePidLock(lockFile);
+
+    expect(existsSync(lockFile)).toBe(false);
+    rmSync(tempDir, { recursive: true });
+  });
+
+  it('handles non-existent lock file gracefully', () => {
+    // Should not throw
+    releasePidLock('/tmp/nonexistent-lock-file-12345.pid');
   });
 });
