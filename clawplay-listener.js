@@ -742,6 +742,10 @@ var GatewayWsClient = class {
         this.connectPromise = null;
         this.connectResolve = null;
         this.connectReject = null;
+        if (!this.closed) {
+          this.wasEverConnected = true;
+          this.scheduleReconnect();
+        }
       }
     };
     this.ws.onerror = () => {
@@ -1426,6 +1430,7 @@ var GameSession = class _GameSession {
     this.lastDecision = this.lastDecision.then(async () => {
       if (mySeq !== this.decisionSeq) {
         this.emit({ type: "DECISION_STALE", skipped: mySeq, current: this.decisionSeq });
+        this.debug("DECISION_STALE", { skipped: mySeq, current: this.decisionSeq });
         return;
       }
       let agentText = "";
@@ -1444,12 +1449,14 @@ var GameSession = class _GameSession {
       } catch (err) {
         if (mySeq !== this.decisionSeq) {
           this.emit({ type: "DECISION_STALE", skipped: mySeq, current: this.decisionSeq });
+          this.debug("DECISION_STALE", { skipped: mySeq, current: this.decisionSeq, context: "callAgent_error" });
           this.notifyAgent(controlSignals.decisionTimedOut());
           return;
         }
         const msg = err instanceof Error ? err.message : String(err);
         this.consecutiveDecisionFailures++;
         this.emit({ type: "DECISION_FAILURE", consecutive: this.consecutiveDecisionFailures, error: msg, gwConnected: this.gatewayClient.isConnected() });
+        this.debug("DECISION_FAILURE", { hand: myHandNumber, consecutive: this.consecutiveDecisionFailures, error: msg, gwConnected: this.gatewayClient.isConnected() });
         if (this.consecutiveDecisionFailures >= _GameSession.MAX_CONSECUTIVE_FAILURES && this.onFatalDecisionFailure) {
           const reason = `${this.consecutiveDecisionFailures} consecutive decision failures`;
           await this.notifyAgent(controlSignals.decisionFailureExit(this.consecutiveDecisionFailures));
@@ -1461,6 +1468,7 @@ var GameSession = class _GameSession {
       }
       if (mySeq !== this.decisionSeq) {
         this.emit({ type: "DECISION_STALE", skipped: mySeq, current: this.decisionSeq });
+        this.debug("DECISION_STALE", { skipped: mySeq, current: this.decisionSeq, context: "post_callAgent" });
         this.notifyAgent(controlSignals.decisionTimedOut());
         return;
       }
@@ -1474,6 +1482,7 @@ var GameSession = class _GameSession {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         this.emit({ type: "DECISION_PARSE_ERROR", error: msg, agentText: agentText.slice(0, 300) });
+        this.debug("DECISION_PARSE_ERROR", { hand: myHandNumber, error: msg, agentText: agentText.slice(0, 300) });
       }
       if (decision) {
         this.debug("DECISION_RESPONSE", { hand: myHandNumber, decision, rawAgentText: agentText.slice(0, 500) });
@@ -1481,6 +1490,7 @@ var GameSession = class _GameSession {
       if (!decision?.action) {
         this.consecutiveDecisionFailures++;
         this.emit({ type: "DECISION_FAILURE", consecutive: this.consecutiveDecisionFailures, reason: "no_action", agentText: agentText.slice(0, 300) });
+        this.debug("DECISION_FAILURE", { hand: myHandNumber, consecutive: this.consecutiveDecisionFailures, reason: "no_action", agentText: agentText.slice(0, 300) });
         if (this.consecutiveDecisionFailures >= _GameSession.MAX_CONSECUTIVE_FAILURES && this.onFatalDecisionFailure) {
           const reason = `${this.consecutiveDecisionFailures} consecutive decision failures`;
           await this.notifyAgent(controlSignals.decisionFailureExit(this.consecutiveDecisionFailures));
@@ -1496,6 +1506,7 @@ var GameSession = class _GameSession {
       }
       if (this.currentHandNumber !== myHandNumber) {
         this.emit({ type: "DECISION_STALE_HAND", decidedHand: myHandNumber, currentHand: this.currentHandNumber, action: decision.action });
+        this.debug("DECISION_STALE_HAND", { decidedHand: myHandNumber, currentHand: this.currentHandNumber, action: decision.action });
         this.notifyAgent(controlSignals.decisionStaleHand(decision.action));
         return;
       }
@@ -1520,10 +1531,12 @@ var GameSession = class _GameSession {
         } else {
           const reason = await resp.text().catch(() => null);
           this.emit({ type: "ACTION_REJECTED", status: resp.status, action: decision.action, reason });
+          this.debug("ACTION_REJECTED", { hand: myHandNumber, status: resp.status, action: decision.action, reason });
           if (resp.status === 429) {
             const retryAfter = parseInt(resp.headers.get("retry-after") || "0", 10);
             const backoffMs = Math.max(retryAfter * 1e3, 5e3);
             this.emit({ type: "ACTION_THROTTLED", backoffMs, action: decision.action });
+            this.debug("ACTION_THROTTLED", { hand: myHandNumber, backoffMs, action: decision.action });
             await new Promise((r) => setTimeout(r, backoffMs));
           } else {
             this.notifyAgent(controlSignals.actionRejected(resp.status, reason || "unknown reason"));
@@ -1533,6 +1546,7 @@ var GameSession = class _GameSession {
       } catch (actionErr) {
         const actionErrMsg = actionErr instanceof Error ? actionErr.message : String(actionErr);
         this.emit({ type: "ACTION_SUBMIT_ERROR", error: actionErrMsg, action: decision.action });
+        this.debug("ACTION_SUBMIT_ERROR", { hand: myHandNumber, error: actionErrMsg, action: decision.action });
         await new Promise((r) => setTimeout(r, 3e3));
         try {
           const retryResp = await fetch(`${this.backendUrl}/api/me/game/action`, {
@@ -1559,6 +1573,7 @@ var GameSession = class _GameSession {
     }).catch((e) => {
       const msg = e instanceof Error ? e.message : String(e);
       this.emit({ type: "DECISION_CHAIN_ERROR", error: msg });
+      this.debug("DECISION_CHAIN_ERROR", { error: msg });
     });
   }
   // ── Signal suppression ─────────────────────────────────────────
@@ -2037,7 +2052,13 @@ ${content}`;
     emit({ type: "CONNECTION_ERROR", error: "eventsource package not available" });
     process.exit(1);
   }
-  const gatewayClient = new GatewayWsClient({ emit: (obj) => emit(obj) });
+  const gatewayClient = new GatewayWsClient({
+    emit: (obj) => {
+      emit(obj);
+      const t = obj.type;
+      if (t?.startsWith("GW_")) debug(t, obj);
+    }
+  });
   const suppressedSignals = config.suppressedSignals ?? [];
   const session = new GameSession({
     channel,
@@ -2053,11 +2074,18 @@ ${content}`;
     emitFn: emit
   });
   session.personalityContext = personalityContext;
-  try {
-    await gatewayClient.connect();
-  } catch (gwErr) {
-    const msg = gwErr instanceof Error ? gwErr.message : String(gwErr);
-    emit({ type: "GW_CONNECT_FAILED", error: msg });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await gatewayClient.connect();
+      debug("GW_STARTUP_CONNECTED", { attempt });
+      break;
+    } catch (gwErr) {
+      const msg = gwErr instanceof Error ? gwErr.message : String(gwErr);
+      debug("GW_STARTUP_RETRY", { attempt, error: msg });
+      emit({ type: "GW_CONNECT_FAILED", error: msg, attempt });
+      if (attempt < 4) await new Promise((r) => setTimeout(r, 2e3));
+      else debug("GW_STARTUP_EXHAUSTED", { attempts: 5 });
+    }
   }
   if (listenerMode !== "game") {
     emit({ type: "MODE", mode: "lobby" });

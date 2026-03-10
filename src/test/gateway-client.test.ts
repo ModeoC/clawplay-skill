@@ -594,6 +594,46 @@ describe('GatewayWsClient', () => {
       client.stop();
     });
 
+    it('schedules background reconnect after initial connect failure', async () => {
+      const emitted: Record<string, unknown>[] = [];
+      const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });
+
+      // Initial connect — simulate immediate close (gateway not up)
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      const expectReject = expect(connectPromise).rejects.toThrow();
+      mockWsInstance.onclose?.();
+
+      await expectReject;
+
+      // Should have scheduled a background reconnect
+      const reconnect = emitted.find(e => e.type === 'GW_RECONNECT');
+      expect(reconnect).toBeTruthy();
+      expect(reconnect!.delayMs).toBe(1000);
+
+      // After the backoff, a new WS connection should be attempted
+      const wsCountBefore = mockWsConstructorCalls.length;
+      await vi.advanceTimersByTimeAsync(1001);
+      expect(mockWsConstructorCalls.length).toBeGreaterThan(wsCountBefore);
+
+      // Complete the background reconnect
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(
+        mockWsInstance.send.mock.calls.find(
+          (c: string[]) => JSON.parse(c[0]).method === 'connect',
+        )![0],
+      );
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await vi.advanceTimersByTimeAsync(1);
+
+      // Should be connected now
+      expect(client.isConnected()).toBe(true);
+      expect(emitted.filter(e => e.type === 'GW_CONNECTED')).toHaveLength(1);
+
+      client.stop();
+    });
+
     it('emits events for observability', async () => {
       const emitted: Record<string, unknown>[] = [];
       const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });

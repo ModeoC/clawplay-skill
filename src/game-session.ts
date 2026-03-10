@@ -443,6 +443,7 @@ export class GameSession {
     this.lastDecision = this.lastDecision.then(async () => {
       if (mySeq !== this.decisionSeq) {
         this.emit({ type: 'DECISION_STALE', skipped: mySeq, current: this.decisionSeq });
+        this.debug('DECISION_STALE', { skipped: mySeq, current: this.decisionSeq });
         return;
       }
 
@@ -463,12 +464,14 @@ export class GameSession {
       } catch (err) {
         if (mySeq !== this.decisionSeq) {
           this.emit({ type: 'DECISION_STALE', skipped: mySeq, current: this.decisionSeq });
+          this.debug('DECISION_STALE', { skipped: mySeq, current: this.decisionSeq, context: 'callAgent_error' });
           this.notifyAgent(controlSignals.decisionTimedOut());
           return;
         }
         const msg = err instanceof Error ? err.message : String(err);
         this.consecutiveDecisionFailures++;
         this.emit({ type: 'DECISION_FAILURE', consecutive: this.consecutiveDecisionFailures, error: msg, gwConnected: this.gatewayClient.isConnected() });
+        this.debug('DECISION_FAILURE', { hand: myHandNumber, consecutive: this.consecutiveDecisionFailures, error: msg, gwConnected: this.gatewayClient.isConnected() });
         if (this.consecutiveDecisionFailures >= GameSession.MAX_CONSECUTIVE_FAILURES && this.onFatalDecisionFailure) {
           const reason = `${this.consecutiveDecisionFailures} consecutive decision failures`;
           await this.notifyAgent(controlSignals.decisionFailureExit(this.consecutiveDecisionFailures));
@@ -481,6 +484,7 @@ export class GameSession {
 
       if (mySeq !== this.decisionSeq) {
         this.emit({ type: 'DECISION_STALE', skipped: mySeq, current: this.decisionSeq });
+        this.debug('DECISION_STALE', { skipped: mySeq, current: this.decisionSeq, context: 'post_callAgent' });
         this.notifyAgent(controlSignals.decisionTimedOut());
         return;
       }
@@ -495,6 +499,7 @@ export class GameSession {
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         this.emit({ type: 'DECISION_PARSE_ERROR', error: msg, agentText: agentText.slice(0, 300) });
+        this.debug('DECISION_PARSE_ERROR', { hand: myHandNumber, error: msg, agentText: agentText.slice(0, 300) });
       }
 
       if (decision) {
@@ -504,6 +509,7 @@ export class GameSession {
       if (!decision?.action) {
         this.consecutiveDecisionFailures++;
         this.emit({ type: 'DECISION_FAILURE', consecutive: this.consecutiveDecisionFailures, reason: 'no_action', agentText: agentText.slice(0, 300) });
+        this.debug('DECISION_FAILURE', { hand: myHandNumber, consecutive: this.consecutiveDecisionFailures, reason: 'no_action', agentText: agentText.slice(0, 300) });
         if (this.consecutiveDecisionFailures >= GameSession.MAX_CONSECUTIVE_FAILURES && this.onFatalDecisionFailure) {
           const reason = `${this.consecutiveDecisionFailures} consecutive decision failures`;
           await this.notifyAgent(controlSignals.decisionFailureExit(this.consecutiveDecisionFailures));
@@ -523,6 +529,7 @@ export class GameSession {
       // Submit action to poker server — but first check if hand moved on
       if (this.currentHandNumber !== myHandNumber) {
         this.emit({ type: 'DECISION_STALE_HAND', decidedHand: myHandNumber, currentHand: this.currentHandNumber, action: decision.action });
+        this.debug('DECISION_STALE_HAND', { decidedHand: myHandNumber, currentHand: this.currentHandNumber, action: decision.action });
         this.notifyAgent(controlSignals.decisionStaleHand(decision.action));
         return;
       }
@@ -549,11 +556,13 @@ export class GameSession {
         } else {
           const reason = await resp.text().catch(() => null);
           this.emit({ type: 'ACTION_REJECTED', status: resp.status, action: decision.action, reason });
+          this.debug('ACTION_REJECTED', { hand: myHandNumber, status: resp.status, action: decision.action, reason });
 
           if (resp.status === 429) {
             const retryAfter = parseInt(resp.headers.get('retry-after') || '0', 10);
             const backoffMs = Math.max(retryAfter * 1000, 5000);
             this.emit({ type: 'ACTION_THROTTLED', backoffMs, action: decision.action });
+            this.debug('ACTION_THROTTLED', { hand: myHandNumber, backoffMs, action: decision.action });
             await new Promise(r => setTimeout(r, backoffMs));
           } else {
             this.notifyAgent(controlSignals.actionRejected(resp.status, reason || 'unknown reason'));
@@ -564,6 +573,7 @@ export class GameSession {
       } catch (actionErr: unknown) {
         const actionErrMsg = actionErr instanceof Error ? (actionErr as Error).message : String(actionErr);
         this.emit({ type: 'ACTION_SUBMIT_ERROR', error: actionErrMsg, action: decision.action });
+        this.debug('ACTION_SUBMIT_ERROR', { hand: myHandNumber, error: actionErrMsg, action: decision.action });
 
         // Retry once after 3s
         await new Promise(r => setTimeout(r, 3000));
@@ -592,6 +602,7 @@ export class GameSession {
     }).catch((e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
       this.emit({ type: 'DECISION_CHAIN_ERROR', error: msg });
+      this.debug('DECISION_CHAIN_ERROR', { error: msg });
     });
   }
 

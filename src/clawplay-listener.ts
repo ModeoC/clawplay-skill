@@ -603,7 +603,14 @@ async function main(): Promise<void> {
   }
 
   // Create gateway WS client and game session
-  const gatewayClient = new GatewayWsClient({ emit: (obj) => emit(obj) });
+  const gatewayClient = new GatewayWsClient({
+    emit: (obj) => {
+      emit(obj);
+      // Route GW events to debug log for post-mortem diagnostics
+      const t = obj.type as string | undefined;
+      if (t?.startsWith('GW_')) debug(t, obj);
+    },
+  });
 
   const suppressedSignals = config.suppressedSignals ?? [];
 
@@ -622,13 +629,19 @@ async function main(): Promise<void> {
   });
   session.personalityContext = personalityContext;
 
-  // Connect gateway WS client (for subagent decision/warmup/reflection runs)
-  try {
-    await gatewayClient.connect();
-  } catch (gwErr) {
-    const msg = gwErr instanceof Error ? gwErr.message : String(gwErr);
-    emit({ type: 'GW_CONNECT_FAILED', error: msg });
-    // Non-fatal: will retry on first callAgent()
+  // Connect gateway WS client with retry (gateway may still be starting after restart)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await gatewayClient.connect();
+      debug('GW_STARTUP_CONNECTED', { attempt });
+      break;
+    } catch (gwErr) {
+      const msg = gwErr instanceof Error ? gwErr.message : String(gwErr);
+      debug('GW_STARTUP_RETRY', { attempt, error: msg });
+      emit({ type: 'GW_CONNECT_FAILED', error: msg, attempt });
+      if (attempt < 4) await new Promise(r => setTimeout(r, 2000));
+      else debug('GW_STARTUP_EXHAUSTED', { attempts: 5 });
+    }
   }
 
   // ── Lobby mode (default) ────────────────────────────────────────

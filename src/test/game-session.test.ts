@@ -442,6 +442,45 @@ describe('GameSession — sendDecision', () => {
     expect(failure).toBeTruthy();
   });
 
+  it('logs DECISION_FAILURE to debug on agent error', async () => {
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async () => { throw new Error('agent timeout'); };
+
+    const { session, debugLog } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    session.sendDecision('test prompt', context);
+    await session.lastDecision;
+
+    const debugEntry = debugLog.find(e => e.label === 'DECISION_FAILURE');
+    expect(debugEntry).toBeTruthy();
+    expect(debugEntry!.data.error).toBe('agent timeout');
+    expect(debugEntry!.data.gwConnected).toBe(true);
+    expect(debugEntry!.data.hand).toBe(1);
+  });
+
+  it('logs DECISION_FAILURE to debug when no action parsed', async () => {
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async () => ({ payloads: [{ text: 'no json here' }] });
+
+    const { session, debugLog } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 2;
+
+    session.sendDecision('test prompt', context);
+    await session.lastDecision;
+
+    const debugEntry = debugLog.find(e => e.label === 'DECISION_FAILURE');
+    expect(debugEntry).toBeTruthy();
+    expect(debugEntry!.data.reason).toBe('no_action');
+    expect(debugEntry!.data.hand).toBe(2);
+  });
+
   it('calls onFatalDecisionFailure after MAX_CONSECUTIVE_FAILURES', async () => {
     const mockGw = makeMockGatewayClient();
     mockGw.callAgent = async () => { throw new Error('agent timeout'); };

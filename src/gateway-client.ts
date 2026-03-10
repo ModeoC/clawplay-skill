@@ -171,6 +171,12 @@ export class GatewayWsClient {
         this.connectPromise = null;
         this.connectResolve = null;
         this.connectReject = null;
+        // Schedule background reconnect even on initial failure so the client
+        // proactively retries instead of sitting dead until callAgent's retry
+        if (!this.closed) {
+          this.wasEverConnected = true;
+          this.scheduleReconnect();
+        }
       }
     };
 
