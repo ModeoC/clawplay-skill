@@ -73,7 +73,7 @@ export class GatewayWsClient {
   private pending = new Map<string, PendingRequest>();
   private token: string | undefined;
   private url: string;
-  private connected = false;
+  private _connected = false;
   private closed = false;
   private connectPromise: Promise<void> | null = null;
   private connectResolve: (() => void) | null = null;
@@ -83,6 +83,7 @@ export class GatewayWsClient {
   private wasEverConnected = false;
   private nonce: string | null = null;
   private challengeTimer: ReturnType<typeof setTimeout> | null = null;
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private emitFn: ((obj: Record<string, unknown>) => void) | null = null;
 
   constructor(opts?: { emit?: (obj: Record<string, unknown>) => void }) {
@@ -91,9 +92,14 @@ export class GatewayWsClient {
     this.emitFn = opts?.emit ?? null;
   }
 
+  /** Whether the WS is currently connected and authenticated. */
+  isConnected(): boolean {
+    return this._connected;
+  }
+
   /** Connect to the gateway and complete the auth handshake. */
   async connect(): Promise<void> {
-    if (this.connected) return;
+    if (this._connected) return;
     if (this.connectPromise) return this.connectPromise;
 
     // Cancel any pending reconnect — we're connecting now
@@ -126,7 +132,7 @@ export class GatewayWsClient {
     // Challenge timeout — if we don't get a challenge within 5s, fail
     this.challengeTimer = setTimeout(() => {
       this.challengeTimer = null;
-      if (!this.connected) {
+      if (!this._connected) {
         this.ws?.close();
         this.connectReject?.(new Error('Gateway connect challenge timeout'));
       }
@@ -145,8 +151,9 @@ export class GatewayWsClient {
 
     this.ws.onclose = () => {
       if (this.challengeTimer) { clearTimeout(this.challengeTimer); this.challengeTimer = null; }
-      const wasConnected = this.connected;
-      this.connected = false;
+      this.stopKeepalive();
+      const wasConnected = this._connected;
+      this._connected = false;
       this.ws = null;
       this.flushPending(new Error('Gateway connection closed'));
 
@@ -226,10 +233,11 @@ export class GatewayWsClient {
 
     this.request('connect', params, { timeoutMs: 5000 })
       .then(() => {
-        this.connected = true;
+        this._connected = true;
         this.wasEverConnected = true;
         this.backoffMs = 1000; // Reset backoff only after successful auth
         if (this.challengeTimer) { clearTimeout(this.challengeTimer); this.challengeTimer = null; }
+        this.startKeepalive();
         this.connectResolve?.();
         this.connectPromise = null;
         this.connectResolve = null;
@@ -275,15 +283,24 @@ export class GatewayWsClient {
 
   /** Call the agent RPC method. Handles two-phase response. */
   async callAgent(params: AgentCallParams, timeoutMs = 60_000): Promise<AgentCallResult> {
-    if (!this.connected) {
-      try {
-        await this.connect();
-      } catch {
-        // First connect attempt failed — try once more after a short delay
-        this.emit({ type: 'GW_CALLAGENT_RETRY' });
-        await new Promise(r => setTimeout(r, 1000));
-        await this.connect();
+    if (!this._connected) {
+      // Retry connect up to 3 times with exponential backoff (1s, 2s, 4s)
+      let lastErr: Error | undefined;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await this.connect();
+          lastErr = undefined;
+          break;
+        } catch (err) {
+          lastErr = err instanceof Error ? err : new Error(String(err));
+          if (attempt < 2) {
+            const delay = 1000 * 2 ** attempt;
+            this.emit({ type: 'GW_CALLAGENT_RETRY', attempt: attempt + 1, delayMs: delay });
+            await new Promise(r => setTimeout(r, delay));
+          }
+        }
       }
+      if (lastErr) throw lastErr;
     }
 
     const rpcParams: Record<string, unknown> = {
@@ -308,6 +325,7 @@ export class GatewayWsClient {
   /** Disconnect and stop reconnecting. */
   stop(): void {
     this.closed = true;
+    this.stopKeepalive();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -315,6 +333,31 @@ export class GatewayWsClient {
     this.ws?.close();
     this.ws = null;
     this.flushPending(new Error('Gateway client stopped'));
+  }
+
+  // ── Keepalive ───────────────────────────────────────────────────────
+
+  private startKeepalive(): void {
+    this.stopKeepalive();
+    this.keepaliveTimer = setInterval(() => {
+      if (!this._connected || !this.ws) return;
+      this.request('health', {}, { timeoutMs: 5000 })
+        .then(() => {
+          this.emit({ type: 'GW_KEEPALIVE_OK' });
+        })
+        .catch(() => {
+          this.emit({ type: 'GW_KEEPALIVE_FAILED' });
+          // Force-close to trigger reconnect
+          this.ws?.close();
+        });
+    }, 30_000);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
   }
 
   private scheduleReconnect(): void {

@@ -569,7 +569,7 @@ async function main(): Promise<void> {
     emit({ type: 'CONNECTION_ERROR', error: '--channel and --chat-id are required' });
     process.exit(1);
   }
-  if (direct.debug) initDebugLog();
+  initDebugLog(); // Always enable debug logging for post-mortem analysis
   const channel = direct.channel;
   const chatId = direct.chatId;
   const deliveryAccount = direct.account ?? config.accountId ?? null;

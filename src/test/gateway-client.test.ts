@@ -555,7 +555,7 @@ describe('GatewayWsClient', () => {
       client.stop();
     });
 
-    it('callAgent emits GW_CALLAGENT_RETRY and propagates error when both attempts fail', async () => {
+    it('callAgent emits GW_CALLAGENT_RETRY and propagates error when all 3 attempts fail', async () => {
       const emitted: Record<string, unknown>[] = [];
       const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });
 
@@ -567,8 +567,8 @@ describe('GatewayWsClient', () => {
       // Let the catch block in callAgent run (microtask propagation)
       await vi.advanceTimersByTimeAsync(0);
 
-      // Should emit retry event
-      expect(emitted.some(e => e.type === 'GW_CALLAGENT_RETRY')).toBe(true);
+      // Should emit first retry event (attempt 1, delay 1s)
+      expect(emitted.some(e => e.type === 'GW_CALLAGENT_RETRY' && e.attempt === 1)).toBe(true);
 
       // Advance past the 1s retry delay
       await vi.advanceTimersByTimeAsync(1001);
@@ -576,8 +576,19 @@ describe('GatewayWsClient', () => {
       // Second connect attempt — also fails
       await vi.advanceTimersByTimeAsync(1); // trigger onopen
       mockWsInstance.onclose?.();
+      await vi.advanceTimersByTimeAsync(0);
 
-      // Should propagate the error to the caller
+      // Should emit second retry event (attempt 2, delay 2s)
+      expect(emitted.some(e => e.type === 'GW_CALLAGENT_RETRY' && e.attempt === 2)).toBe(true);
+
+      // Advance past the 2s retry delay
+      await vi.advanceTimersByTimeAsync(2001);
+
+      // Third connect attempt — also fails
+      await vi.advanceTimersByTimeAsync(1); // trigger onopen
+      mockWsInstance.onclose?.();
+
+      // Should propagate the error to the caller after 3 failed attempts
       await expect(callPromise).rejects.toThrow();
 
       client.stop();
@@ -598,6 +609,96 @@ describe('GatewayWsClient', () => {
       await connectPromise;
 
       expect(emitted.some(e => e.type === 'GW_CONNECTED')).toBe(true);
+    });
+  });
+
+  describe('isConnected', () => {
+    it('returns false before connecting', () => {
+      const client = new GatewayWsClient();
+      expect(client.isConnected()).toBe(false);
+    });
+
+    it('returns true after successful auth', async () => {
+      const client = new GatewayWsClient();
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      expect(client.isConnected()).toBe(true);
+      client.stop();
+    });
+
+    it('returns false after connection drop', async () => {
+      const client = new GatewayWsClient();
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      mockWsInstance.onclose?.();
+      expect(client.isConnected()).toBe(false);
+      client.stop();
+    });
+  });
+
+  describe('keepalive', () => {
+    it('sends health ping every 30s after auth and emits GW_KEEPALIVE_OK on success', async () => {
+      const emitted: Record<string, unknown>[] = [];
+      const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });
+
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      mockWsInstance.send.mockClear();
+
+      // Advance 30s to trigger keepalive
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // Should have sent a health request
+      expect(mockWsInstance.send).toHaveBeenCalledTimes(1);
+      const healthFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      expect(healthFrame.method).toBe('health');
+
+      // Send success response
+      mockWsInstance.onmessage?.({
+        data: JSON.stringify({ type: 'res', id: healthFrame.id, ok: true, payload: {} }),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(emitted.some(e => e.type === 'GW_KEEPALIVE_OK')).toBe(true);
+      client.stop();
+    });
+
+    it('closes connection on keepalive timeout and emits GW_KEEPALIVE_FAILED', async () => {
+      const emitted: Record<string, unknown>[] = [];
+      const client = new GatewayWsClient({ emit: (obj) => emitted.push(obj) });
+
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      // Advance 30s to trigger keepalive
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // Don't respond to health — let it timeout (5s)
+      await vi.advanceTimersByTimeAsync(5001);
+
+      expect(emitted.some(e => e.type === 'GW_KEEPALIVE_FAILED')).toBe(true);
+      // close() should have been called to trigger reconnect
+      expect(mockWsInstance.close).toHaveBeenCalled();
+      client.stop();
     });
   });
 

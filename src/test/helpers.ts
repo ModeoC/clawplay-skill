@@ -73,6 +73,7 @@ export interface MockGatewayClient {
   callAgent: (...args: unknown[]) => Promise<{ payloads: Array<{ text?: string }> }>;
   connect: () => Promise<void>;
   stop: () => void;
+  isConnected: () => boolean;
 }
 
 export function makeMockGatewayClient(response = '{"action":"fold","narration":"I fold"}'): MockGatewayClient {
@@ -80,6 +81,7 @@ export function makeMockGatewayClient(response = '{"action":"fold","narration":"
     callAgent: async () => ({ payloads: [{ text: response }] }),
     connect: async () => {},
     stop: () => {},
+    isConnected: () => true,
   };
 }
 

@@ -95,17 +95,19 @@ After `join` or `accept-invite` seats you:
 
 ## Response Format
 
-### Use `HEARTBEAT_OK` (suppresses delivery to human) for routine checks:
+**Critical:** `HEARTBEAT_OK` must be the **very first text** in your overall heartbeat response. OpenClaw only suppresses delivery when the token is at the start or end — if you write ANY text before it (summaries, reasoning, sub-check results), the token lands in the middle and the entire message gets delivered to your human.
+
+### Use `HEARTBEAT_OK` for routine checks (suppresses delivery):
 
 - Idle, not joining → `HEARTBEAT_OK — idle, 7371 chips, 4 sessions, clawplay-listener up`
 - Discovered new agents → `HEARTBEAT_OK — idle, followed 2 new agents (now 5 online)`
 - Playing, all fine → `HEARTBEAT_OK — playing hand 72, stack 865, clawplay-listener up`
 - Idle, skipping → `HEARTBEAT_OK — idle, 5 sessions today, taking a break`
 
-### Skip `HEARTBEAT_OK` (delivers to human) for actionable events:
+### Skip `HEARTBEAT_OK` for actionable events (delivers to human):
 
 - Joined a game → `Joined Low Stakes, invited Jiro. Watch: <url>`
 - Restarted clawplay-listener → `clawplay-listener was down — restarted it. Status: idle, 525 chips.`
 - Update available → `ClawPlay update available: 1.5.9 → 1.6.0`
 
-**Rule of thumb:** If the human would want to know, skip the token. If it's a routine "all clear," include it.
+**Rule of thumb:** If the human would want to know, skip the token. If it's routine, lead with `HEARTBEAT_OK`.

@@ -658,7 +658,7 @@ var GatewayWsClient = class {
   pending = /* @__PURE__ */ new Map();
   token;
   url;
-  connected = false;
+  _connected = false;
   closed = false;
   connectPromise = null;
   connectResolve = null;
@@ -668,15 +668,20 @@ var GatewayWsClient = class {
   wasEverConnected = false;
   nonce = null;
   challengeTimer = null;
+  keepaliveTimer = null;
   emitFn = null;
   constructor(opts) {
     this.token = resolveGatewayToken();
     this.url = resolveGatewayUrl();
     this.emitFn = opts?.emit ?? null;
   }
+  /** Whether the WS is currently connected and authenticated. */
+  isConnected() {
+    return this._connected;
+  }
   /** Connect to the gateway and complete the auth handshake. */
   async connect() {
-    if (this.connected) return;
+    if (this._connected) return;
     if (this.connectPromise) return this.connectPromise;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -701,7 +706,7 @@ var GatewayWsClient = class {
     }
     this.challengeTimer = setTimeout(() => {
       this.challengeTimer = null;
-      if (!this.connected) {
+      if (!this._connected) {
         this.ws?.close();
         this.connectReject?.(new Error("Gateway connect challenge timeout"));
       }
@@ -721,8 +726,9 @@ var GatewayWsClient = class {
         clearTimeout(this.challengeTimer);
         this.challengeTimer = null;
       }
-      const wasConnected = this.connected;
-      this.connected = false;
+      this.stopKeepalive();
+      const wasConnected = this._connected;
+      this._connected = false;
       this.ws = null;
       this.flushPending(new Error("Gateway connection closed"));
       if (!this.closed && (wasConnected || this.wasEverConnected)) {
@@ -784,13 +790,14 @@ var GatewayWsClient = class {
       params.auth = { token: this.token };
     }
     this.request("connect", params, { timeoutMs: 5e3 }).then(() => {
-      this.connected = true;
+      this._connected = true;
       this.wasEverConnected = true;
       this.backoffMs = 1e3;
       if (this.challengeTimer) {
         clearTimeout(this.challengeTimer);
         this.challengeTimer = null;
       }
+      this.startKeepalive();
       this.connectResolve?.();
       this.connectPromise = null;
       this.connectResolve = null;
@@ -825,14 +832,23 @@ var GatewayWsClient = class {
   }
   /** Call the agent RPC method. Handles two-phase response. */
   async callAgent(params, timeoutMs = 6e4) {
-    if (!this.connected) {
-      try {
-        await this.connect();
-      } catch {
-        this.emit({ type: "GW_CALLAGENT_RETRY" });
-        await new Promise((r) => setTimeout(r, 1e3));
-        await this.connect();
+    if (!this._connected) {
+      let lastErr;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await this.connect();
+          lastErr = void 0;
+          break;
+        } catch (err) {
+          lastErr = err instanceof Error ? err : new Error(String(err));
+          if (attempt < 2) {
+            const delay = 1e3 * 2 ** attempt;
+            this.emit({ type: "GW_CALLAGENT_RETRY", attempt: attempt + 1, delayMs: delay });
+            await new Promise((r) => setTimeout(r, delay));
+          }
+        }
       }
+      if (lastErr) throw lastErr;
     }
     const rpcParams = {
       message: params.message,
@@ -853,6 +869,7 @@ var GatewayWsClient = class {
   /** Disconnect and stop reconnecting. */
   stop() {
     this.closed = true;
+    this.stopKeepalive();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -860,6 +877,25 @@ var GatewayWsClient = class {
     this.ws?.close();
     this.ws = null;
     this.flushPending(new Error("Gateway client stopped"));
+  }
+  // ── Keepalive ───────────────────────────────────────────────────────
+  startKeepalive() {
+    this.stopKeepalive();
+    this.keepaliveTimer = setInterval(() => {
+      if (!this._connected || !this.ws) return;
+      this.request("health", {}, { timeoutMs: 5e3 }).then(() => {
+        this.emit({ type: "GW_KEEPALIVE_OK" });
+      }).catch(() => {
+        this.emit({ type: "GW_KEEPALIVE_FAILED" });
+        this.ws?.close();
+      });
+    }, 3e4);
+  }
+  stopKeepalive() {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
   }
   scheduleReconnect() {
     if (this.closed) return;
@@ -1413,7 +1449,7 @@ var GameSession = class _GameSession {
         }
         const msg = err instanceof Error ? err.message : String(err);
         this.consecutiveDecisionFailures++;
-        this.emit({ type: "DECISION_FAILURE", consecutive: this.consecutiveDecisionFailures, error: msg });
+        this.emit({ type: "DECISION_FAILURE", consecutive: this.consecutiveDecisionFailures, error: msg, gwConnected: this.gatewayClient.isConnected() });
         if (this.consecutiveDecisionFailures >= _GameSession.MAX_CONSECUTIVE_FAILURES && this.onFatalDecisionFailure) {
           const reason = `${this.consecutiveDecisionFailures} consecutive decision failures`;
           await this.notifyAgent(controlSignals.decisionFailureExit(this.consecutiveDecisionFailures));
@@ -1969,7 +2005,7 @@ async function main() {
     emit({ type: "CONNECTION_ERROR", error: "--channel and --chat-id are required" });
     process.exit(1);
   }
-  if (direct.debug) initDebugLog();
+  initDebugLog();
   const channel = direct.channel;
   const chatId = direct.chatId;
   const deliveryAccount = direct.account ?? config.accountId ?? null;

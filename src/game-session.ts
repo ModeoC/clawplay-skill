@@ -468,7 +468,7 @@ export class GameSession {
         }
         const msg = err instanceof Error ? err.message : String(err);
         this.consecutiveDecisionFailures++;
-        this.emit({ type: 'DECISION_FAILURE', consecutive: this.consecutiveDecisionFailures, error: msg });
+        this.emit({ type: 'DECISION_FAILURE', consecutive: this.consecutiveDecisionFailures, error: msg, gwConnected: this.gatewayClient.isConnected() });
         if (this.consecutiveDecisionFailures >= GameSession.MAX_CONSECUTIVE_FAILURES && this.onFatalDecisionFailure) {
           const reason = `${this.consecutiveDecisionFailures} consecutive decision failures`;
           await this.notifyAgent(controlSignals.decisionFailureExit(this.consecutiveDecisionFailures));
