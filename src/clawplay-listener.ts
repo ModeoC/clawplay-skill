@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, unlinkSync, createWriteStream } from 'node:fs';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+
 import type { WriteStream } from 'node:fs';
 import { readClawPlayConfig, resolveApiKey, readLocalVersion, SKILL_ROOT } from './review.js';
 import { controlSignals } from './prompts.js';
@@ -228,20 +228,21 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
       const currentVersion = readLocalVersion();
       if (startupVersion !== 'unknown' && currentVersion !== startupVersion) {
         emit({ type: 'VERSION_STALE', startupVersion, currentVersion });
-        es?.close();  // Close SSE before spawning replacement to avoid overlap
-        if (lockFilePath) releasePidLock(lockFilePath); // Release lock so replacement doesn't wait 2s
-        const child = spawn(process.execPath, process.argv.slice(1), {
-          detached: true,
-          stdio: 'ignore',
-        });
-        child.unref();
-        fatalExit('Version stale — restarting');
+        fatalExit('Version stale — exiting for upgrade');
       }
     }
 
     // Wire up fatal decision failure handler
     session.onFatalDecisionFailure = (reason: string) => {
       void onGameEnd(reason, true);
+    };
+
+    // Wire up refetch state handler (used after 400 ACTION_REJECTED)
+    session.onRefetchState = (data) => {
+      if (!inGame) return;
+      session.handleStateEvent(data, context, (reason: string) => {
+        void onGameEnd(reason);
+      });
     };
 
     function connectSSE(): void {

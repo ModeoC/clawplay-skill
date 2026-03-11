@@ -404,7 +404,6 @@ var init_dist2 = __esm({
 // clawplay-listener.ts
 import { readFileSync as readFileSync4, writeFileSync as writeFileSync2, unlinkSync as unlinkSync2, createWriteStream } from "node:fs";
 import { join as join4 } from "node:path";
-import { spawn } from "node:child_process";
 
 // review.ts
 import { readFileSync } from "node:fs";
@@ -597,10 +596,10 @@ ${playbookSection}
 \u2550\u2550\u2550 SITUATION \u2550\u2550\u2550
 ${summary}
 ${handActionSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
-Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. If raising, your amount MUST be within the range shown in Actions (e.g., 'raise 40-970' means amount between 40 and 970).
+Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. Use ONLY the exact action types listed in Actions above. 'bet' and 'raise' are DIFFERENT: 'bet' = first wager on a street (no one has bet yet), 'raise' = increasing an existing bet. If Actions shows 'bet 10-640', you MUST use "bet", NOT "raise". If Actions shows 'raise 40-500', you MUST use "raise", NOT "bet". Your amount MUST be within the shown range.
 
 Respond with ONLY a JSON object, no other text:
-{"action": "fold|check|call|raise|all_in", "amount": <number if raise/bet, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>"}`;
+{"action": "fold|check|call|bet|raise|all_in", "amount": <number if bet/raise, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>"}`;
 }
 function buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights) {
   const parts = [
@@ -1144,6 +1143,7 @@ var GameSession = class _GameSession {
   lastDecision = Promise.resolve();
   consecutiveDecisionFailures = 0;
   onFatalDecisionFailure = null;
+  onRefetchState = null;
   // Reflection state
   reflectionTimeouts = 0;
   reflectionsSent = 0;
@@ -1555,6 +1555,20 @@ var GameSession = class _GameSession {
             this.notifyAgent(controlSignals.actionRejected(resp.status, reason || "unknown reason"));
           }
           context.lastTurnKey = null;
+          if (resp.status === 400 && this.onRefetchState) {
+            try {
+              const stateResp = await fetch(`${this.backendUrl}/api/me/game`, {
+                headers: { "x-api-key": this.apiKey },
+                signal: AbortSignal.timeout(5e3)
+              });
+              if (stateResp.ok) {
+                const freshState = await stateResp.json();
+                this.emit({ type: "ACTION_REJECTED_REFETCH" });
+                this.onRefetchState(freshState);
+              }
+            } catch {
+            }
+          }
         }
       } catch (actionErr) {
         const actionErrMsg = actionErr instanceof Error ? actionErr.message : String(actionErr);
@@ -1810,18 +1824,17 @@ function runUnifiedMode(config) {
       const currentVersion = readLocalVersion();
       if (startupVersion !== "unknown" && currentVersion !== startupVersion) {
         emit({ type: "VERSION_STALE", startupVersion, currentVersion });
-        es?.close();
-        if (lockFilePath) releasePidLock(lockFilePath);
-        const child = spawn(process.execPath, process.argv.slice(1), {
-          detached: true,
-          stdio: "ignore"
-        });
-        child.unref();
-        fatalExit("Version stale \u2014 restarting");
+        fatalExit("Version stale \u2014 exiting for upgrade");
       }
     }
     session.onFatalDecisionFailure = (reason) => {
       void onGameEnd(reason, true);
+    };
+    session.onRefetchState = (data) => {
+      if (!inGame) return;
+      session.handleStateEvent(data, context, (reason) => {
+        void onGameEnd(reason);
+      });
     };
     function connectSSE() {
       if (es) es.close();

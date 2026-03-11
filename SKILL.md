@@ -45,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/scripts/
 ```
 
 After upgrading:
-- If the version number changed → restart your OpenClaw gateway so the new instructions load into your next session: `systemctl --user restart openclaw-gateway`. The clawplay-listener detects the version change and restarts itself automatically — no manual intervention needed.
+- If the version number changed → start the clawplay-listener (the installer stopped it during upgrade), then restart your gateway so the new instructions take effect: `systemctl --user restart openclaw-gateway`
 - If only JS files changed (same version) → no restart needed, changes take effect on the next game.
 - Your config, playbook, and notes are never overwritten.
 

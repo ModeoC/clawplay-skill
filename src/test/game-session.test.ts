@@ -691,6 +691,83 @@ describe('GameSession — sendDecision action error paths', () => {
 
     fetchSpy.mockRestore();
   });
+
+  // ── 400 rejection → active refetch ──
+
+  it('re-fetches state after 400 rejection and calls onRefetchState', async () => {
+    const { session, emitted, fetchSpy } = makeActionErrorSession();
+    const context = makeContext({ lastTurnKey: 'hand-1-seat-0' });
+
+    const freshView = makeView({ handNumber: 1, isYourTurn: true });
+    let refetchedState: unknown = null;
+    session.onRefetchState = (state) => { refetchedState = state; };
+
+    fetchSpy
+      // 1st call: action POST → 400
+      .mockResolvedValueOnce({
+        ok: false, status: 400, text: async () => 'Invalid action',
+      } as Response)
+      // 2nd call: GET /api/me/game → fresh state
+      .mockResolvedValueOnce({
+        ok: true, status: 200, json: async () => freshView,
+      } as Response);
+
+    session.sendDecision('prompt', context);
+    await vi.advanceTimersByTimeAsync(100);
+    await session.lastDecision;
+
+    expect(emitted.find(e => e.type === 'ACTION_REJECTED')).toBeTruthy();
+    expect(emitted.find(e => e.type === 'ACTION_REJECTED_REFETCH')).toBeTruthy();
+    expect(refetchedState).toEqual(freshView);
+    expect(context.lastTurnKey).toBeNull();
+
+    fetchSpy.mockRestore();
+  });
+
+  it('skips refetch when onRefetchState is not wired', async () => {
+    const { session, emitted, fetchSpy } = makeActionErrorSession();
+    const context = makeContext({ lastTurnKey: 'hand-1-seat-0' });
+
+    // onRefetchState is null by default
+    fetchSpy.mockResolvedValueOnce({
+      ok: false, status: 400, text: async () => 'Invalid action',
+    } as Response);
+
+    session.sendDecision('prompt', context);
+    await vi.advanceTimersByTimeAsync(100);
+    await session.lastDecision;
+
+    expect(emitted.find(e => e.type === 'ACTION_REJECTED')).toBeTruthy();
+    expect(emitted.find(e => e.type === 'ACTION_REJECTED_REFETCH')).toBeFalsy();
+    // Only 1 fetch call (the action POST), no refetch
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fetchSpy.mockRestore();
+  });
+
+  it('silently ignores refetch errors (best-effort)', async () => {
+    const { session, emitted, fetchSpy } = makeActionErrorSession();
+    const context = makeContext({ lastTurnKey: 'hand-1-seat-0' });
+
+    session.onRefetchState = () => {};
+
+    fetchSpy
+      .mockResolvedValueOnce({
+        ok: false, status: 400, text: async () => 'Invalid action',
+      } as Response)
+      // Refetch fails
+      .mockRejectedValueOnce(new TypeError('network error'));
+
+    session.sendDecision('prompt', context);
+    await vi.advanceTimersByTimeAsync(100);
+    await session.lastDecision;
+
+    expect(emitted.find(e => e.type === 'ACTION_REJECTED')).toBeTruthy();
+    expect(emitted.find(e => e.type === 'ACTION_REJECTED_REFETCH')).toBeFalsy();
+    // Should not throw — best-effort
+
+    fetchSpy.mockRestore();
+  });
 });
 
 // ── processHandResult via handleOutputs ─────────────────────────────

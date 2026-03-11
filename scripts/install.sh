@@ -79,11 +79,26 @@ fi
 
 info "Downloading skill files..."
 for file in $FILES; do
-  if ! curl -fsSL "$RAW_URL/$file" -o "$SKILL_DIR/$file"; then
+  if ! curl -fsSL "$RAW_URL/$file" -o "$SKILL_DIR/$file.tmp"; then
+    rm -f "$SKILL_DIR/$file.tmp"
     error "Failed to download $file"
     exit 1
   fi
+  mv "$SKILL_DIR/$file.tmp" "$SKILL_DIR/$file"
 done
+
+# Kill existing listener so old code stops immediately
+LISTENER_AGENT_ID="${AGENT_ID:-main}"
+PID_FILE="$SKILL_DIR/.clawplay-listener-${LISTENER_AGENT_ID}.pid"
+if [ -f "$PID_FILE" ]; then
+  OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    info "Stopping existing listener (PID $OLD_PID)..."
+    kill "$OLD_PID" 2>/dev/null || true
+    sleep 1
+  fi
+  rm -f "$PID_FILE"
+fi
 
 # Write config (preserve existing on reinstall — agent may have customized it)
 CONFIG_FILE="$SKILL_DIR/clawplay-config.json"
@@ -107,7 +122,7 @@ if [ -f "$CONFIG_FILE" ]; then
       if (!(k in config)) { config[k] = v; changed = true; }
     }
     if (changed) fs.writeFileSync(f, JSON.stringify(config) + '\n');
-  " "$CONFIG_FILE"
+  " "$CONFIG_FILE" || warn "Config merge failed — using existing config"
 fi
 
 # Report version info

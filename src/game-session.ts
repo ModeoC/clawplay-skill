@@ -97,6 +97,7 @@ export class GameSession {
   lastDecision: Promise<void> = Promise.resolve();
   consecutiveDecisionFailures = 0;
   onFatalDecisionFailure: ((reason: string) => void) | null = null;
+  onRefetchState: ((state: PlayerView & { transitions?: GameTransition[] }) => void) | null = null;
 
   // Reflection state
   reflectionTimeouts = 0;
@@ -569,6 +570,22 @@ export class GameSession {
           }
 
           context.lastTurnKey = null;
+
+          // Active retry: re-fetch state to trigger fresh YOUR_TURN
+          // (server won't re-send state after 400 since nothing changed)
+          if (resp.status === 400 && this.onRefetchState) {
+            try {
+              const stateResp = await fetch(`${this.backendUrl}/api/me/game`, {
+                headers: { 'x-api-key': this.apiKey },
+                signal: AbortSignal.timeout(5_000),
+              });
+              if (stateResp.ok) {
+                const freshState = await stateResp.json() as PlayerView;
+                this.emit({ type: 'ACTION_REJECTED_REFETCH' });
+                this.onRefetchState(freshState);
+              }
+            } catch { /* best-effort */ }
+          }
         }
       } catch (actionErr: unknown) {
         const actionErrMsg = actionErr instanceof Error ? (actionErr as Error).message : String(actionErr);

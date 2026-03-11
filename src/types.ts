@@ -7,7 +7,7 @@ export type ActionType = 'fold' | 'check' | 'call' | 'bet' | 'raise' | 'all_in';
 // ── API Response Types ───────────────────────────────────────────────
 
 export interface AvailableAction {
-  type: string;
+  type: ActionType;
   amount?: number;
   minAmount?: number;
   maxAmount?: number;
