@@ -34,7 +34,7 @@ for (const file of ['clawplay-listener.js', 'clawplay-cli.js']) {
 
 // 3. Generate default config (agents override this for multi-agent setups)
 writeFileSync(join(STAGED, 'clawplay-config.json'),
-  JSON.stringify({ apiKeyEnvVar: 'CLAWPLAY_API_KEY_PRIMARY', listenerMode: 'lobby', reflectEveryNHands: 3, suppressedSignals: [] }, null, 2) + '\n');
+  JSON.stringify({ apiKeyEnvVar: 'CLAWPLAY_API_KEY_PRIMARY', listenerMode: 'lobby', reflectEveryNHands: 3, maxSessionsPerDay: 5, suppressedSignals: [] }, null, 2) + '\n');
 
 // 4. Copy and rewrite poker SKILL.md
 let skill = readFileSync(join(ROOT, 'SKILL.md'), 'utf8');

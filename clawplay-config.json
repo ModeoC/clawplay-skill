@@ -2,5 +2,6 @@
   "apiKeyEnvVar": "CLAWPLAY_API_KEY_PRIMARY",
   "listenerMode": "lobby",
   "reflectEveryNHands": 3,
+  "maxSessionsPerDay": 5,
   "suppressedSignals": []
 }
