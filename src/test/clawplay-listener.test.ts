@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, unlinkSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,7 @@ import {
   parseDirectArgs,
   acquirePidLock,
   releasePidLock,
+  isBeingReplaced,
 } from '../clawplay-listener.js';
 import {
   buildDecisionPrompt,
@@ -655,5 +656,105 @@ describe('releasePidLock', () => {
   it('handles non-existent lock file gracefully', () => {
     // Should not throw
     releasePidLock('/tmp/nonexistent-lock-file-12345.pid');
+  });
+});
+
+// ─── isBeingReplaced ──────────────────────────────────────────────
+
+describe('isBeingReplaced', () => {
+  let tempDir: string;
+  let lockFile: string;
+
+  afterEach(() => {
+    try { unlinkSync(lockFile); } catch {}
+    try { rmSync(tempDir, { recursive: true }); } catch {}
+  });
+
+  function setup(): void {
+    tempDir = mkdtempSync(join(tmpdir(), 'listener-replace-'));
+    lockFile = join(tempDir, '.clawplay-listener-main.pid');
+  }
+
+  it('returns false when lock file is null', () => {
+    expect(isBeingReplaced(null)).toBe(false);
+  });
+
+  it('returns false when lock file does not exist', () => {
+    expect(isBeingReplaced('/tmp/nonexistent-lock-12345.pid')).toBe(false);
+  });
+
+  it('returns false when lock file contains own PID', () => {
+    setup();
+    writeFileSync(lockFile, String(process.pid));
+    expect(isBeingReplaced(lockFile)).toBe(false);
+  });
+
+  it('returns true when lock file contains a different PID', () => {
+    setup();
+    writeFileSync(lockFile, '99999');
+    expect(isBeingReplaced(lockFile)).toBe(true);
+  });
+
+  it('returns false when lock file contains corrupted data', () => {
+    setup();
+    writeFileSync(lockFile, 'not-a-pid');
+    expect(isBeingReplaced(lockFile)).toBe(false);
+  });
+});
+
+// ─── acquirePidLock — PID write ordering ──────────────────────────
+
+describe('acquirePidLock — replacement ordering', () => {
+  let tempDir: string;
+  let lockFile: string;
+
+  afterEach(() => {
+    try { unlinkSync(lockFile); } catch {}
+    try { rmSync(tempDir, { recursive: true }); } catch {}
+  });
+
+  it('acquires lock from dead process and ends with caller PID', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'listener-order-'));
+    lockFile = join(tempDir, '.clawplay-listener-main.pid');
+    writeFileSync(lockFile, '999999999');
+
+    const emitted: Record<string, unknown>[] = [];
+    await acquirePidLock(lockFile, (obj) => emitted.push(obj));
+
+    expect(readFileSync(lockFile, 'utf8').trim()).toBe(String(process.pid));
+  });
+
+  it('writes new PID to lock file before sending SIGTERM to live process', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'listener-order-'));
+    lockFile = join(tempDir, '.clawplay-listener-main.pid');
+    const fakePid = process.pid + 1;
+    writeFileSync(lockFile, String(fakePid));
+
+    // Spy on process.kill to intercept signals and check lock file state
+    let lockContentAtSigterm: string | null = null;
+    let aliveChecks = 0;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, sig?: string | number) => {
+      if (sig === 'SIGTERM') {
+        // At SIGTERM time, read the lock file to verify our PID is already there
+        lockContentAtSigterm = readFileSync(lockFile, 'utf8').trim();
+      }
+      if (sig === 0 || sig === undefined) {
+        aliveChecks++;
+        // First alive check: pretend alive. Subsequent: pretend dead.
+        if (aliveChecks === 1) return true;
+        throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+      }
+      return true;
+    }) as typeof process.kill);
+
+    const emitted: Record<string, unknown>[] = [];
+    await acquirePidLock(lockFile, (obj) => emitted.push(obj));
+
+    // The key assertion: at the moment SIGTERM was sent, the lock file
+    // already contained our PID (not the old one)
+    expect(lockContentAtSigterm).toBe(String(process.pid));
+    expect(emitted.find(e => e.type === 'KILLING_STALE_LISTENER')).toBeTruthy();
+
+    killSpy.mockRestore();
   });
 });

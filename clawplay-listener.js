@@ -1682,6 +1682,7 @@ async function acquirePidLock(lockFile, emitFn) {
     if (existingPid && existingPid !== process.pid) {
       try {
         process.kill(existingPid, 0);
+        writeFileSync2(lockFile, String(process.pid));
         emitFn({ type: "KILLING_STALE_LISTENER", pid: existingPid });
         process.kill(existingPid, "SIGTERM");
         await new Promise((r) => setTimeout(r, 2e3));
@@ -1702,6 +1703,15 @@ function releasePidLock(lockFile) {
   try {
     unlinkSync2(lockFile);
   } catch {
+  }
+}
+function isBeingReplaced(lockFile) {
+  if (!lockFile) return false;
+  try {
+    const currentPid = parseInt(readFileSync4(lockFile, "utf8").trim(), 10);
+    return !!currentPid && currentPid !== process.pid;
+  } catch {
+    return false;
   }
 }
 var CHANNEL_ALIASES = /* @__PURE__ */ new Set(["--channel"]);
@@ -1900,13 +1910,15 @@ function runUnifiedMode(config) {
     for (const signal of ["SIGTERM", "SIGINT"]) {
       process.on(signal, () => {
         emit({ type: "SIGNAL_EXIT", signal });
-        if (inGame) {
+        if (inGame && !isBeingReplaced(lockFilePath)) {
           fetch(`${backendUrl}/api/me/game/leave`, {
             method: "POST",
             headers: { "x-api-key": apiKey },
             signal: AbortSignal.timeout(3e3)
           }).catch(() => {
           });
+        } else if (inGame) {
+          emit({ type: "SKIP_LEAVE_REPLACED" });
         }
         fatalExit("Session terminated");
       });
@@ -1981,13 +1993,15 @@ function runGameMode(config) {
       clearInterval(heartbeatCheck);
       const isRebuyState = exitCode !== 0 && context.prevState?.canRebuy === true && context.prevState?.yourChips === 0;
       const finalStack = context.prevState?.yourChips ?? "unknown";
-      if (reason !== "Table closed" && !isRebuyState) {
+      if (reason !== "Table closed" && !isRebuyState && !isBeingReplaced(lockFilePath)) {
         fetch(`${backendUrl}/api/me/game/leave`, {
           method: "POST",
           headers: { "x-api-key": apiKey },
           signal: AbortSignal.timeout(3e3)
         }).catch(() => {
         });
+      } else if (reason !== "Table closed" && !isRebuyState) {
+        emit({ type: "SKIP_LEAVE_REPLACED" });
       }
       if (isRebuyState) {
         es?.close();
@@ -2153,6 +2167,7 @@ if (isDirectRun) {
 }
 export {
   acquirePidLock,
+  isBeingReplaced,
   parseDirectArgs,
   processStateEvent,
   releasePidLock

@@ -40,7 +40,8 @@ let lockFilePath: string | null = null;
 
 /**
  * Acquires a PID lock file. If a previous listener is still running,
- * sends SIGTERM and waits briefly for graceful shutdown.
+ * writes our PID first (so the old process can detect replacement),
+ * then sends SIGTERM and waits briefly for graceful shutdown.
  */
 export async function acquirePidLock(lockFile: string, emitFn: (obj: Record<string, unknown>) => void): Promise<void> {
   try {
@@ -49,6 +50,8 @@ export async function acquirePidLock(lockFile: string, emitFn: (obj: Record<stri
     if (existingPid && existingPid !== process.pid) {
       try {
         process.kill(existingPid, 0); // Check if alive
+        // Write OUR PID first — so old process can detect replacement via isBeingReplaced()
+        writeFileSync(lockFile, String(process.pid));
         emitFn({ type: 'KILLING_STALE_LISTENER', pid: existingPid });
         process.kill(existingPid, 'SIGTERM');
         await new Promise(r => setTimeout(r, 2_000));
@@ -62,12 +65,24 @@ export async function acquirePidLock(lockFile: string, emitFn: (obj: Record<stri
     }
   } catch {} // No lock file — proceed
 
+  // Ensure PID is written (covers no-lock-file and dead-process cases)
   writeFileSync(lockFile, String(process.pid));
 }
 
 /** Removes a PID lock file. Safe to call if file doesn't exist. */
 export function releasePidLock(lockFile: string): void {
   try { unlinkSync(lockFile); } catch {}
+}
+
+/** Checks if another process has taken over our lock file (replacement in progress). */
+export function isBeingReplaced(lockFile: string | null): boolean {
+  if (!lockFile) return false;
+  try {
+    const currentPid = parseInt(readFileSync(lockFile, 'utf8').trim(), 10);
+    return !!currentPid && currentPid !== process.pid;
+  } catch {
+    return false; // Lock file gone — not a replacement
+  }
 }
 
 // ── Delivery args ────────────────────────────────────────────────────
@@ -328,13 +343,15 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
     for (const signal of ['SIGTERM', 'SIGINT'] as const) {
       process.on(signal, () => {
         emit({ type: 'SIGNAL_EXIT', signal });
-        if (inGame) {
-          // Best-effort leave
+        if (inGame && !isBeingReplaced(lockFilePath)) {
+          // Best-effort leave — only if NOT being replaced by a new listener
           fetch(`${backendUrl}/api/me/game/leave`, {
             method: 'POST',
             headers: { 'x-api-key': apiKey },
             signal: AbortSignal.timeout(3000),
           }).catch(() => {});
+        } else if (inGame) {
+          emit({ type: 'SKIP_LEAVE_REPLACED' });
         }
         fatalExit('Session terminated');
       });
@@ -511,12 +528,14 @@ function runGameMode(config: GameModeConfig): Promise<void> {
 
       const finalStack = context.prevState?.yourChips ?? 'unknown';
 
-      if (reason !== 'Table closed' && !isRebuyState) {
+      if (reason !== 'Table closed' && !isRebuyState && !isBeingReplaced(lockFilePath)) {
         fetch(`${backendUrl}/api/me/game/leave`, {
           method: 'POST',
           headers: { 'x-api-key': apiKey },
           signal: AbortSignal.timeout(3000),
         }).catch(() => {});
+      } else if (reason !== 'Table closed' && !isRebuyState) {
+        emit({ type: 'SKIP_LEAVE_REPLACED' });
       }
 
       if (isRebuyState) {
