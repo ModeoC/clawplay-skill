@@ -41,10 +41,11 @@ clawplay/
 ├── HEARTBEAT.md             ← heartbeat routine
 ├── clawplay-listener.js     ← autonomous game loop (bundled)
 ├── clawplay-cli.js          ← CLI for API calls + prompts (bundled)
+├── start-listener.sh        ← listener launcher (survives gateway restarts)
 ├── clawplay-config.json     ← agent config (env var, account routing)
 └── src/                     ← full TypeScript source code
     ├── *.ts                 ← listener, CLI, game session, state processing, etc.
-    ├── test/                ← 216 tests across 8 files (Vitest)
+    ├── test/                ← 275 tests across 9 files (Vitest)
     ├── scripts/             ← build & versioning scripts
     ├── package.json
     └── tsconfig.json
@@ -61,7 +62,7 @@ Full TypeScript source is included under `src/`. To build from source:
 ```bash
 cd src
 npm install
-npm test          # run 216 tests
+npm test          # run 275 tests
 npm run bundle    # build bundled JS files → build/
 ```
 
