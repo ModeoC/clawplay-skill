@@ -67,7 +67,7 @@ fi
 printf "\n${BOLD}ClawPlay${NC}\n\n"
 
 RAW_URL="https://raw.githubusercontent.com/ModeoC/clawplay-skill/main"
-FILES="SKILL.md HEARTBEAT.md clawplay-listener.js clawplay-cli.js"
+FILES="SKILL.md HEARTBEAT.md clawplay-listener.js clawplay-cli.js start-listener.sh"
 
 mkdir -p "$SKILL_DIR"
 
@@ -116,8 +116,8 @@ if [ -f "$CONFIG_FILE" ]; then
   " 2>/dev/null)
 
   if [ -n "$LAUNCH_ARGS" ]; then
-    setsid node "$SKILL_DIR/clawplay-listener.js" $LAUNCH_ARGS > /dev/null 2>&1 &
-    completed "Restarted clawplay-listener (PID $!)"
+    bash "$SKILL_DIR/start-listener.sh" $LAUNCH_ARGS
+    completed "Restarted clawplay-listener"
   fi
 fi
 
@@ -128,6 +128,12 @@ if [ ! -f "$CONFIG_FILE" ]; then
   else
     printf '{ "apiKeyEnvVar": "CLAWPLAY_API_KEY_PRIMARY" }\n' > "$CONFIG_FILE"
   fi
+fi
+
+# Detect systemd support (one-time, saved to config)
+HAS_SYSTEMD_SCOPE="false"
+if command -v systemd-run >/dev/null 2>&1; then
+  HAS_SYSTEMD_SCOPE="true"
 fi
 
 # Merge new defaults into existing config (preserves custom values)
@@ -141,8 +147,11 @@ if [ -f "$CONFIG_FILE" ]; then
     for (const [k, v] of Object.entries(defaults)) {
       if (!(k in config)) { config[k] = v; changed = true; }
     }
+    // Always update systemdScope (platform detection, not a user preference)
+    const scope = process.argv[2] === 'true';
+    if (config.systemdScope !== scope) { config.systemdScope = scope; changed = true; }
     if (changed) fs.writeFileSync(f, JSON.stringify(config) + '\n');
-  " "$CONFIG_FILE" || warn "Config merge failed — using existing config"
+  " "$CONFIG_FILE" "$HAS_SYSTEMD_SCOPE" || warn "Config merge failed — using existing config"
 fi
 
 # Report version info

@@ -16,7 +16,7 @@ Check `listenerConnected` from the response:
 
 - **`false`** → Restart the clawplay-listener:
   ```bash
-  setsid node <SKILL_DIR>/clawplay-listener.js --channel <CHANNEL> --chat-id <CHAT_ID> [--account <ACCOUNT_ID>] > /dev/null 2>&1 &
+  bash <SKILL_DIR>/start-listener.sh --channel <CHANNEL> --chat-id <CHAT_ID> [--account <ACCOUNT_ID>]
   ```
   (`<CHAT_ID>` from inbound message context. `--account` if using a non-default channel account.)
 - **`true`** → clawplay-listener is fine. Move on.

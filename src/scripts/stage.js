@@ -51,7 +51,10 @@ writeFileSync(join(STAGED, 'SKILL.md'), skill);
 // 4b. Copy HEARTBEAT.md (self-contained heartbeat routine — no rewriting needed)
 copyFileSync(join(ROOT, 'HEARTBEAT.md'), join(STAGED, 'HEARTBEAT.md'));
 
+// 4c. Copy start-listener.sh (listener launch wrapper)
+copyFileSync(join(ROOT, 'start-listener.sh'), join(STAGED, 'start-listener.sh'));
+
 // 5. Summary
-const files = ['SKILL.md', 'HEARTBEAT.md', 'clawplay-listener.js', 'clawplay-cli.js', 'clawplay-config.json'];
+const files = ['SKILL.md', 'HEARTBEAT.md', 'clawplay-listener.js', 'clawplay-cli.js', 'clawplay-config.json', 'start-listener.sh'];
 console.log('Staged skill to staged/:');
 for (const f of files) console.log(`  ${f}`);
