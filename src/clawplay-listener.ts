@@ -115,6 +115,25 @@ export function parseDirectArgs(argv: string[]): { enabled: boolean; channel: st
   return { enabled, channel, chatId, account, debug: debugFlag, mode };
 }
 
+// ── Launch args persistence ──────────────────────────────────────────
+
+/**
+ * Persists launch args to config so install.sh can auto-restart the listener on upgrade.
+ * Only writes if args changed (avoids unnecessary disk writes).
+ */
+export function persistLaunchArgs(configPath: string, channel: string, chatId: string, account: string | null): void {
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    const launchArgs: Record<string, string> = { channel, chatId };
+    if (account) launchArgs.account = account;
+    const prev = cfg.lastLaunchArgs;
+    if (!prev || prev.channel !== launchArgs.channel || prev.chatId !== launchArgs.chatId || prev.account !== launchArgs.account) {
+      cfg.lastLaunchArgs = launchArgs;
+      writeFileSync(configPath, JSON.stringify(cfg) + '\n');
+    }
+  } catch {}
+}
+
 // ── Crash handlers ──────────────────────────────────────────────────
 
 process.on('uncaughtException', (err: Error) => {
@@ -632,6 +651,9 @@ async function main(): Promise<void> {
   const chatId = direct.chatId;
   const deliveryAccount = direct.account ?? config.accountId ?? null;
   const agentId = config.agentId ?? 'main';
+
+  // Persist launch args so install.sh can auto-restart on upgrade
+  persistLaunchArgs(join(SKILL_ROOT, 'clawplay-config.json'), channel, chatId, deliveryAccount);
 
   // Acquire PID lock — kill any stale listener for this agent
   lockFilePath = join(SKILL_ROOT, `.clawplay-listener-${agentId}.pid`);

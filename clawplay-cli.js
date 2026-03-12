@@ -36,8 +36,16 @@ function readClawPlayConfig() {
   }
 }
 function resolveApiKey(config) {
-  if (config.apiKeyEnvVar) return process.env[config.apiKeyEnvVar] || void 0;
-  return process.env.CLAWPLAY_API_KEY_PRIMARY || void 0;
+  const envVar = config.apiKeyEnvVar || "CLAWPLAY_API_KEY_PRIMARY";
+  if (process.env[envVar]) return process.env[envVar];
+  try {
+    const ocPath = join(process.env.HOME || "/root", ".openclaw", "openclaw.json");
+    const oc = JSON.parse(readFileSync(ocPath, "utf8"));
+    const val = oc?.env?.vars?.[envVar];
+    if (typeof val === "string" && val) return val;
+  } catch {
+  }
+  return void 0;
 }
 function readLocalVersion() {
   try {

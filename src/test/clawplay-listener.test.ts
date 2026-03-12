@@ -8,13 +8,14 @@ import {
   acquirePidLock,
   releasePidLock,
   isBeingReplaced,
+  persistLaunchArgs,
 } from '../clawplay-listener.js';
 import {
   buildDecisionPrompt,
   buildSummary,
   buildHandResultSummary,
 } from '../prompts.js';
-import { readPlaybook, readNotes } from '../review.js';
+import { readPlaybook, readNotes, resolveApiKey } from '../review.js';
 import type { PlayerView, ListenerContext } from '../types.js';
 import { makeView, makeContext } from './helpers.js';
 
@@ -582,6 +583,54 @@ describe('readNotes', () => {
   });
 });
 
+// ─── resolveApiKey ───────────────────────────────────────────────────
+
+describe('resolveApiKey — openclaw.json fallback', () => {
+  let tempDir: string;
+  let origHome: string | undefined;
+
+  afterEach(() => {
+    if (origHome !== undefined) process.env.HOME = origHome;
+    else delete process.env.HOME;
+    delete process.env.CLAWPLAY_API_KEY_PRIMARY;
+    delete process.env.CLAWPLAY_API_KEY_JIRO;
+    try { rmSync(tempDir, { recursive: true }); } catch {}
+  });
+
+  function setupFakeHome(envVars: Record<string, string> = {}): void {
+    tempDir = mkdtempSync(join(tmpdir(), 'resolve-key-'));
+    const ocDir = join(tempDir, '.openclaw');
+    const { mkdirSync } = require('node:fs');
+    mkdirSync(ocDir);
+    writeFileSync(join(ocDir, 'openclaw.json'), JSON.stringify({ env: { vars: envVars } }) + '\n');
+    origHome = process.env.HOME;
+    process.env.HOME = tempDir;
+  }
+
+  it('prefers process.env when set', () => {
+    process.env.CLAWPLAY_API_KEY_PRIMARY = 'env-key';
+    expect(resolveApiKey({})).toBe('env-key');
+  });
+
+  it('falls back to openclaw.json when env var is not set', () => {
+    delete process.env.CLAWPLAY_API_KEY_PRIMARY;
+    setupFakeHome({ CLAWPLAY_API_KEY_PRIMARY: 'json-key' });
+    expect(resolveApiKey({})).toBe('json-key');
+  });
+
+  it('uses custom apiKeyEnvVar from config', () => {
+    delete process.env.CLAWPLAY_API_KEY_JIRO;
+    setupFakeHome({ CLAWPLAY_API_KEY_JIRO: 'jiro-json-key' });
+    expect(resolveApiKey({ apiKeyEnvVar: 'CLAWPLAY_API_KEY_JIRO' })).toBe('jiro-json-key');
+  });
+
+  it('returns undefined when neither env nor json has the key', () => {
+    delete process.env.CLAWPLAY_API_KEY_PRIMARY;
+    setupFakeHome({});
+    expect(resolveApiKey({})).toBeUndefined();
+  });
+});
+
 // ─── PID lock ────────────────────────────────────────────────────────
 
 describe('acquirePidLock', () => {
@@ -703,6 +752,65 @@ describe('isBeingReplaced', () => {
 });
 
 // ─── acquirePidLock — PID write ordering ──────────────────────────
+
+// ─── persistLaunchArgs ────────────────────────────────────────────
+
+describe('persistLaunchArgs', () => {
+  let tempDir: string;
+
+  afterEach(() => {
+    try { rmSync(tempDir, { recursive: true }); } catch {}
+  });
+
+  function setup(initialConfig: Record<string, unknown> = {}): string {
+    tempDir = mkdtempSync(join(tmpdir(), 'launch-args-'));
+    const configPath = join(tempDir, 'clawplay-config.json');
+    writeFileSync(configPath, JSON.stringify(initialConfig) + '\n');
+    return configPath;
+  }
+
+  it('writes lastLaunchArgs to config file', () => {
+    const configPath = setup({ apiKeyEnvVar: 'CLAWPLAY_API_KEY_PRIMARY' });
+    persistLaunchArgs(configPath, 'telegram', '12345', null);
+
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(cfg.lastLaunchArgs).toEqual({ channel: 'telegram', chatId: '12345' });
+    expect(cfg.apiKeyEnvVar).toBe('CLAWPLAY_API_KEY_PRIMARY');
+  });
+
+  it('includes account when provided', () => {
+    const configPath = setup({});
+    persistLaunchArgs(configPath, 'telegram', '12345', 'jiro');
+
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(cfg.lastLaunchArgs).toEqual({ channel: 'telegram', chatId: '12345', account: 'jiro' });
+  });
+
+  it('does not rewrite when args are unchanged', () => {
+    const configPath = setup({ lastLaunchArgs: { channel: 'telegram', chatId: '12345' } });
+    const mtimeBefore = readFileSync(configPath, 'utf8');
+
+    persistLaunchArgs(configPath, 'telegram', '12345', null);
+
+    const mtimeAfter = readFileSync(configPath, 'utf8');
+    expect(mtimeAfter).toBe(mtimeBefore);
+  });
+
+  it('updates when args change', () => {
+    const configPath = setup({ lastLaunchArgs: { channel: 'telegram', chatId: '12345' } });
+    persistLaunchArgs(configPath, 'telegram', '99999', null);
+
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(cfg.lastLaunchArgs.chatId).toBe('99999');
+  });
+
+  it('handles missing config file gracefully', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'launch-args-'));
+    const configPath = join(tempDir, 'nonexistent.json');
+    // Should not throw
+    persistLaunchArgs(configPath, 'telegram', '12345', null);
+  });
+});
 
 describe('acquirePidLock — replacement ordering', () => {
   let tempDir: string;

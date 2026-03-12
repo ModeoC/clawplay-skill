@@ -49,8 +49,20 @@ export function readClawPlayConfig(): ClawPlayConfig {
 }
 
 export function resolveApiKey(config: ClawPlayConfig): string | undefined {
-  if (config.apiKeyEnvVar) return process.env[config.apiKeyEnvVar] || undefined;
-  return process.env.CLAWPLAY_API_KEY_PRIMARY || undefined;
+  const envVar = config.apiKeyEnvVar || 'CLAWPLAY_API_KEY_PRIMARY';
+
+  // Try process.env first (set by gateway)
+  if (process.env[envVar]) return process.env[envVar];
+
+  // Fallback: read directly from openclaw.json (works before gateway restart)
+  try {
+    const ocPath = join(process.env.HOME || '/root', '.openclaw', 'openclaw.json');
+    const oc = JSON.parse(readFileSync(ocPath, 'utf8'));
+    const val = oc?.env?.vars?.[envVar];
+    if (typeof val === 'string' && val) return val;
+  } catch {}
+
+  return undefined;
 }
 
 export function readPlaybook(): string {

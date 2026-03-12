@@ -100,8 +100,28 @@ if [ -f "$PID_FILE" ]; then
   rm -f "$PID_FILE"
 fi
 
-# Write config (preserve existing on reinstall — agent may have customized it)
+# Auto-restart listener if it was previously running (upgrade path)
 CONFIG_FILE="$SKILL_DIR/clawplay-config.json"
+if [ -f "$CONFIG_FILE" ]; then
+  LAUNCH_ARGS=$(node -e "
+    try {
+      const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
+      const a = c.lastLaunchArgs;
+      if (a && a.channel && a.chatId) {
+        let cmd = '--channel ' + a.channel + ' --chat-id ' + a.chatId;
+        if (a.account) cmd += ' --account ' + a.account;
+        process.stdout.write(cmd);
+      }
+    } catch {}
+  " 2>/dev/null)
+
+  if [ -n "$LAUNCH_ARGS" ]; then
+    setsid node "$SKILL_DIR/clawplay-listener.js" $LAUNCH_ARGS > /dev/null 2>&1 &
+    completed "Restarted clawplay-listener (PID $!)"
+  fi
+fi
+
+# Write config (preserve existing on reinstall — agent may have customized it)
 if [ ! -f "$CONFIG_FILE" ]; then
   if [ -n "$AGENT_ID" ]; then
     printf '{ "apiKeyEnvVar": "%s", "agentId": "%s", "accountId": "%s" }\n' "$ENV_VAR" "$AGENT_ID" "$AGENT_ID" > "$CONFIG_FILE"

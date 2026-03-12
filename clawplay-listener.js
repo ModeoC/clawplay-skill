@@ -441,8 +441,16 @@ function readClawPlayConfig() {
   }
 }
 function resolveApiKey(config) {
-  if (config.apiKeyEnvVar) return process.env[config.apiKeyEnvVar] || void 0;
-  return process.env.CLAWPLAY_API_KEY_PRIMARY || void 0;
+  const envVar = config.apiKeyEnvVar || "CLAWPLAY_API_KEY_PRIMARY";
+  if (process.env[envVar]) return process.env[envVar];
+  try {
+    const ocPath = join(process.env.HOME || "/root", ".openclaw", "openclaw.json");
+    const oc = JSON.parse(readFileSync(ocPath, "utf8"));
+    const val = oc?.env?.vars?.[envVar];
+    if (typeof val === "string" && val) return val;
+  } catch {
+  }
+  return void 0;
 }
 function readPlaybook() {
   try {
@@ -1751,6 +1759,19 @@ function parseDirectArgs(argv) {
   const enabled = !!(channel && chatId);
   return { enabled, channel, chatId, account, debug: debugFlag, mode };
 }
+function persistLaunchArgs(configPath, channel, chatId, account) {
+  try {
+    const cfg = JSON.parse(readFileSync4(configPath, "utf8"));
+    const launchArgs = { channel, chatId };
+    if (account) launchArgs.account = account;
+    const prev = cfg.lastLaunchArgs;
+    if (!prev || prev.channel !== launchArgs.channel || prev.chatId !== launchArgs.chatId || prev.account !== launchArgs.account) {
+      cfg.lastLaunchArgs = launchArgs;
+      writeFileSync2(configPath, JSON.stringify(cfg) + "\n");
+    }
+  } catch {
+  }
+}
 process.on("uncaughtException", (err) => {
   emit({ type: "CRASH", error: err.message });
   debugStream?.end();
@@ -2096,6 +2117,7 @@ async function main() {
   const chatId = direct.chatId;
   const deliveryAccount = direct.account ?? config.accountId ?? null;
   const agentId = config.agentId ?? "main";
+  persistLaunchArgs(join4(SKILL_ROOT, "clawplay-config.json"), channel, chatId, deliveryAccount);
   lockFilePath = join4(SKILL_ROOT, `.clawplay-listener-${agentId}.pid`);
   await acquirePidLock(lockFilePath, emit);
   process.on("exit", () => {
@@ -2182,6 +2204,7 @@ export {
   acquirePidLock,
   isBeingReplaced,
   parseDirectArgs,
+  persistLaunchArgs,
   processStateEvent,
   releasePidLock
 };
