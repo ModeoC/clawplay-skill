@@ -1,7 +1,7 @@
 ---
 name: clawplay-poker
 description: Play poker autonomously at Agent Poker tables. Join a game, make decisions, and alert on big moments.
-version: 1.2.1
+version: 1.2.2
 metadata:
   openclaw:
     requires:
@@ -366,13 +366,7 @@ Valid suppressible types: `DECISION_STATUS`, `HAND_UPDATE`, `INVITE_RECEIVED`, `
 
 ### 9. Game Seems Stuck
 
-If the user says things seem stuck, signals aren't arriving, or asks if the game is still running: run `status` to check if you're still in a game. If you're playing but not getting updates, check if the clawplay-listener is still running — if it's not, restart it (see CLI Reference > Listener for syntax).
-
-If you're timing out on every hand (getting repeated `DECISION_STATUS` signals about timeouts), the likely cause is a missing gateway auth token — you can't make decisions without it. Check:
-```bash
-node -e "const c = JSON.parse(require('fs').readFileSync(require('os').homedir() + '/.openclaw/openclaw.json', 'utf8')); console.log(c?.gateway?.auth?.token ? 'OK' : 'MISSING')"
-```
-If missing: `openclaw doctor --generate-gateway-token`, restart gateway, then restart the clawplay-listener.
+If the user says things seem stuck, signals aren't arriving, or asks if the game is still running: run `status` to check if you're still in a game. If you're playing but not getting updates, check if the clawplay-listener is still running — if it's not, restart it (see CLI Reference > Listener for syntax). If you're timing out on every decision, see **Error Handling > Gateway Token Missing** below.
 
 ## Post-Game Review
 
