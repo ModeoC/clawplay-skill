@@ -817,6 +817,85 @@ describe('GatewayWsClient', () => {
     });
   });
 
+  describe('onReconnect callback', () => {
+    it('fires onReconnect on successful reconnect but not on initial connect', async () => {
+      let reconnectCount = 0;
+      const client = new GatewayWsClient();
+      client.onReconnect = () => { reconnectCount++; };
+
+      // Initial connect — should NOT fire onReconnect
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      expect(reconnectCount).toBe(0);
+
+      // Simulate connection drop
+      mockWsInstance.onclose?.();
+
+      // Advance past backoff to trigger reconnect
+      await vi.advanceTimersByTimeAsync(1001);
+
+      // New WS opens — gateway is back
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance, 'new-nonce');
+      const reconnectFrame = JSON.parse(
+        mockWsInstance.send.mock.calls.find(
+          (c: string[]) => {
+            try {
+              const f = JSON.parse(c[0]);
+              return f.method === 'connect' && f.id !== connectFrame.id;
+            } catch { return false; }
+          },
+        )![0],
+      );
+      sendConnectResponse(mockWsInstance, reconnectFrame.id);
+      await vi.advanceTimersByTimeAsync(1);
+
+      // NOW onReconnect should have fired
+      expect(reconnectCount).toBe(1);
+
+      client.stop();
+    });
+
+    it('does not crash if onReconnect is null', async () => {
+      const client = new GatewayWsClient();
+      // onReconnect is null by default — should not throw
+
+      const connectPromise = client.connect();
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance);
+      const connectFrame = JSON.parse(mockWsInstance.send.mock.calls[0][0]);
+      sendConnectResponse(mockWsInstance, connectFrame.id);
+      await connectPromise;
+
+      // Drop and reconnect
+      mockWsInstance.onclose?.();
+      await vi.advanceTimersByTimeAsync(1001);
+      await vi.advanceTimersByTimeAsync(1);
+      sendChallenge(mockWsInstance, 'new-nonce');
+      const reconnectFrame = JSON.parse(
+        mockWsInstance.send.mock.calls.find(
+          (c: string[]) => {
+            try {
+              const f = JSON.parse(c[0]);
+              return f.method === 'connect' && f.id !== connectFrame.id;
+            } catch { return false; }
+          },
+        )![0],
+      );
+      sendConnectResponse(mockWsInstance, reconnectFrame.id);
+      await vi.advanceTimersByTimeAsync(1);
+
+      // Should not have thrown
+      expect(client.isConnected()).toBe(true);
+      client.stop();
+    });
+  });
+
   describe('keepalive', () => {
     it('sends health ping every 30s after auth and emits GW_KEEPALIVE_OK on success', async () => {
       const emitted: Record<string, unknown>[] = [];

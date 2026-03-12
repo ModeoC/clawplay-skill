@@ -122,9 +122,13 @@ export function parseDirectArgs(argv: string[]): { enabled: boolean; channel: st
  * Only writes if args changed (avoids unnecessary disk writes).
  */
 export function persistLaunchArgs(configPath: string, channel: string, chatId: string, account: string | null): void {
+  // Never persist heartbeat — it's an internal channel, not a real delivery target
+  if (channel === 'heartbeat') return;
   try {
     const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
-    const launchArgs: Record<string, string> = { channel, chatId };
+    // Normalize chatId — strip channel prefix if present (e.g. "telegram:123" → "123")
+    const normalizedChatId = chatId.includes(':') ? chatId.split(':').pop()! : chatId;
+    const launchArgs: Record<string, string> = { channel, chatId: normalizedChatId };
     if (account) launchArgs.account = account;
     const prev = cfg.lastLaunchArgs;
     if (!prev || prev.channel !== launchArgs.channel || prev.chatId !== launchArgs.chatId || prev.account !== launchArgs.account) {
@@ -647,9 +651,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   initDebugLog(); // Always enable debug logging for post-mortem analysis
-  const channel = direct.channel;
-  const chatId = direct.chatId;
+  let channel = direct.channel;
+  let chatId = direct.chatId;
   const deliveryAccount = direct.account ?? config.accountId ?? null;
+
+  // Auto-resolve heartbeat channel — use persisted real channel from config
+  if (channel === 'heartbeat') {
+    const prev = config.lastLaunchArgs;
+    if (prev?.channel && prev.channel !== 'heartbeat' && prev?.chatId) {
+      emit({ type: 'HEARTBEAT_CHANNEL_RESOLVED', from: 'heartbeat', to: prev.channel });
+      channel = prev.channel;
+      chatId = prev.chatId;
+    }
+  }
   const agentId = config.agentId ?? 'main';
 
   // Persist launch args so install.sh can auto-restart on upgrade
@@ -714,6 +728,12 @@ async function main(): Promise<void> {
     emitFn: emit,
   });
   session.personalityContext = personalityContext;
+
+  // Reset decision failure counter when gateway reconnects (e.g. after gateway restart)
+  gatewayClient.onReconnect = () => {
+    session.resetDecisionFailures();
+    emit({ type: 'GW_RECONNECT_RESET_FAILURES' });
+  };
 
   // Connect gateway WS client with retry (gateway may still be starting after restart)
   for (let attempt = 0; attempt < 5; attempt++) {

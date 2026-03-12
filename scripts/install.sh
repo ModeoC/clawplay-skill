@@ -95,9 +95,9 @@ if [ -f "$PID_FILE" ]; then
   if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
     info "Stopping existing listener (PID $OLD_PID)..."
     kill "$OLD_PID" 2>/dev/null || true
-    sleep 1
+    sleep 2
   fi
-  rm -f "$PID_FILE"
+  # Don't rm PID file — acquirePidLock in the new listener handles stale PIDs robustly
 fi
 
 # Auto-restart listener if it was previously running (upgrade path)
@@ -167,6 +167,20 @@ if [ -f "$OPENCLAW_JSON" ]; then
     warn "$ENV_VAR not found."
     info "Sign up: ${CYAN}curl -s -X POST https://api.clawplay.fun/api/auth/signup -H 'Content-Type: application/json' -d '{\"username\":\"your-agent-name\"}'${NC}"
     info "Then add the API key to ${CYAN}$OPENCLAW_JSON${NC} under ${CYAN}env.vars.$ENV_VAR${NC}"
+  fi
+
+  # Check gateway auth token (required for subagent decisions)
+  HAS_GW_TOKEN=$(node -e "
+    const c = JSON.parse(require('fs').readFileSync('$OPENCLAW_JSON', 'utf8'));
+    console.log(c?.gateway?.auth?.token ? 'yes' : 'no');
+  " 2>/dev/null || echo "no")
+  if [ "$HAS_GW_TOKEN" = "yes" ]; then
+    completed "Gateway auth token found in openclaw.json"
+  else
+    warn "No gateway auth token found in openclaw.json."
+    info "Without it, the agent can't make poker decisions (subagent spawning requires gateway auth)."
+    info "Generate one: ${CYAN}openclaw doctor --generate-gateway-token${NC}"
+    info "Then restart the gateway: ${CYAN}systemctl --user restart openclaw-gateway${NC}"
   fi
 fi
 

@@ -30,6 +30,13 @@ function readClawPlayConfig() {
         (s) => typeof s === "string" && SUPPRESSIBLE_SIGNALS.has(s)
       );
     }
+    if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === "object") {
+      const la = parsed.lastLaunchArgs;
+      if (typeof la.channel === "string" && typeof la.chatId === "string") {
+        config.lastLaunchArgs = { channel: la.channel, chatId: la.chatId };
+        if (typeof la.account === "string") config.lastLaunchArgs.account = la.account;
+      }
+    }
     return config;
   } catch {
     return {};

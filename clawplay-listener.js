@@ -435,6 +435,13 @@ function readClawPlayConfig() {
         (s) => typeof s === "string" && SUPPRESSIBLE_SIGNALS.has(s)
       );
     }
+    if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === "object") {
+      const la = parsed.lastLaunchArgs;
+      if (typeof la.channel === "string" && typeof la.chatId === "string") {
+        config.lastLaunchArgs = { channel: la.channel, chatId: la.chatId };
+        if (typeof la.account === "string") config.lastLaunchArgs.account = la.account;
+      }
+    }
     return config;
   } catch {
     return {};
@@ -677,6 +684,8 @@ var GatewayWsClient = class {
   challengeTimer = null;
   keepaliveTimer = null;
   emitFn = null;
+  /** Called when the gateway reconnects after a previous successful connection. Not called on initial connect. */
+  onReconnect = null;
   constructor(opts) {
     this.token = resolveGatewayToken();
     this.url = resolveGatewayUrl();
@@ -814,6 +823,7 @@ var GatewayWsClient = class {
       params.auth = { token: this.token };
     }
     this.request("connect", params, { timeoutMs: 5e3 }).then(() => {
+      const isReconnect = this.wasEverConnected;
       this._connected = true;
       this.wasEverConnected = true;
       this.backoffMs = 1e3;
@@ -827,6 +837,7 @@ var GatewayWsClient = class {
       this.connectResolve = null;
       this.connectReject = null;
       this.emit({ type: "GW_CONNECTED" });
+      if (isReconnect) this.onReconnect?.();
     }).catch((err) => {
       this.connectReject?.(err);
       this.connectPromise = null;
@@ -1221,6 +1232,10 @@ var GameSession = class _GameSession {
     } catch {
     }
   }
+  /** Reset consecutive failure count (e.g. after gateway reconnects). */
+  resetDecisionFailures() {
+    this.consecutiveDecisionFailures = 0;
+  }
   // ── SSE onopen handler ──────────────────────────────────────────
   onSSEOpen() {
     this.lastEventTime = Date.now();
@@ -1355,6 +1370,10 @@ var GameSession = class _GameSession {
           this.currentHandEvents.push(output.message);
           break;
         case "YOUR_TURN": {
+          if (!output.state.handNumber || !output.state.gameId) {
+            this.debug("YOUR_TURN_SKIPPED", { reason: "no valid game state" });
+            break;
+          }
           const playbook = readPlaybook();
           const notes = readNotes();
           const handNotes = readHandNotes();
@@ -1760,9 +1779,11 @@ function parseDirectArgs(argv) {
   return { enabled, channel, chatId, account, debug: debugFlag, mode };
 }
 function persistLaunchArgs(configPath, channel, chatId, account) {
+  if (channel === "heartbeat") return;
   try {
     const cfg = JSON.parse(readFileSync4(configPath, "utf8"));
-    const launchArgs = { channel, chatId };
+    const normalizedChatId = chatId.includes(":") ? chatId.split(":").pop() : chatId;
+    const launchArgs = { channel, chatId: normalizedChatId };
     if (account) launchArgs.account = account;
     const prev = cfg.lastLaunchArgs;
     if (!prev || prev.channel !== launchArgs.channel || prev.chatId !== launchArgs.chatId || prev.account !== launchArgs.account) {
@@ -2113,9 +2134,17 @@ async function main() {
     process.exit(1);
   }
   initDebugLog();
-  const channel = direct.channel;
-  const chatId = direct.chatId;
+  let channel = direct.channel;
+  let chatId = direct.chatId;
   const deliveryAccount = direct.account ?? config.accountId ?? null;
+  if (channel === "heartbeat") {
+    const prev = config.lastLaunchArgs;
+    if (prev?.channel && prev.channel !== "heartbeat" && prev?.chatId) {
+      emit({ type: "HEARTBEAT_CHANNEL_RESOLVED", from: "heartbeat", to: prev.channel });
+      channel = prev.channel;
+      chatId = prev.chatId;
+    }
+  }
   const agentId = config.agentId ?? "main";
   persistLaunchArgs(join4(SKILL_ROOT, "clawplay-config.json"), channel, chatId, deliveryAccount);
   lockFilePath = join4(SKILL_ROOT, `.clawplay-listener-${agentId}.pid`);
@@ -2172,6 +2201,10 @@ ${content}`;
     emitFn: emit
   });
   session.personalityContext = personalityContext;
+  gatewayClient.onReconnect = () => {
+    session.resetDecisionFailures();
+    emit({ type: "GW_RECONNECT_RESET_FAILURES" });
+  };
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       await gatewayClient.connect();

@@ -810,6 +810,30 @@ describe('persistLaunchArgs', () => {
     // Should not throw
     persistLaunchArgs(configPath, 'telegram', '12345', null);
   });
+
+  it('skips persistence for heartbeat channel', () => {
+    const configPath = setup({ apiKeyEnvVar: 'CLAWPLAY_API_KEY_JIRO' });
+    persistLaunchArgs(configPath, 'heartbeat', 'heartbeat', 'jiro');
+
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(cfg.lastLaunchArgs).toBeUndefined();
+  });
+
+  it('normalizes chatId by stripping channel prefix', () => {
+    const configPath = setup({});
+    persistLaunchArgs(configPath, 'telegram', 'telegram:7014171428', null);
+
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(cfg.lastLaunchArgs.chatId).toBe('7014171428');
+  });
+
+  it('preserves chatId without prefix unchanged', () => {
+    const configPath = setup({});
+    persistLaunchArgs(configPath, 'telegram', '7014171428', null);
+
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(cfg.lastLaunchArgs.chatId).toBe('7014171428');
+  });
 });
 
 describe('acquirePidLock — replacement ordering', () => {

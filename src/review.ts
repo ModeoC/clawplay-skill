@@ -25,6 +25,7 @@ export interface ClawPlayConfig {
   listenerMode?: 'lobby' | 'game';
   reflectEveryNHands?: number;
   suppressedSignals?: string[];
+  lastLaunchArgs?: { channel: string; chatId: string; account?: string };
 }
 
 export function readClawPlayConfig(): ClawPlayConfig {
@@ -41,6 +42,13 @@ export function readClawPlayConfig(): ClawPlayConfig {
       config.suppressedSignals = parsed.suppressedSignals.filter(
         (s: unknown) => typeof s === 'string' && SUPPRESSIBLE_SIGNALS.has(s),
       );
+    }
+    if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === 'object') {
+      const la = parsed.lastLaunchArgs;
+      if (typeof la.channel === 'string' && typeof la.chatId === 'string') {
+        config.lastLaunchArgs = { channel: la.channel, chatId: la.chatId };
+        if (typeof la.account === 'string') config.lastLaunchArgs.account = la.account;
+      }
     }
     return config;
   } catch {

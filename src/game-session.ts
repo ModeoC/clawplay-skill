@@ -170,6 +170,11 @@ export class GameSession {
     try { unlinkSync(INSIGHTS_FILE); } catch {}
   }
 
+  /** Reset consecutive failure count (e.g. after gateway reconnects). */
+  resetDecisionFailures(): void {
+    this.consecutiveDecisionFailures = 0;
+  }
+
   // ── SSE onopen handler ──────────────────────────────────────────
 
   onSSEOpen(): void {
@@ -325,6 +330,11 @@ export class GameSession {
           break;
 
         case 'YOUR_TURN': {
+          // Guard: skip if we haven't seen a valid game state yet (spurious YOUR_TURN)
+          if (!output.state.handNumber || !output.state.gameId) {
+            this.debug('YOUR_TURN_SKIPPED', { reason: 'no valid game state' });
+            break;
+          }
           const playbook = readPlaybook();
           const notes = readNotes();
           const handNotes = readHandNotes();

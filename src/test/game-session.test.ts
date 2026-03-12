@@ -1193,3 +1193,89 @@ describe('GameSession — resetForNewGame', () => {
     expect(session.lastTransitions).toEqual([]);
   });
 });
+
+describe('GameSession — resetDecisionFailures', () => {
+  it('resets consecutiveDecisionFailures to 0', () => {
+    const { session } = makeSession();
+    session.consecutiveDecisionFailures = 2;
+
+    session.resetDecisionFailures();
+
+    expect(session.consecutiveDecisionFailures).toBe(0);
+  });
+
+  it('is safe to call when already at 0', () => {
+    const { session } = makeSession();
+    session.resetDecisionFailures();
+    expect(session.consecutiveDecisionFailures).toBe(0);
+  });
+});
+
+describe('GameSession — YOUR_TURN guard (spurious state)', () => {
+  it('skips YOUR_TURN with no handNumber', () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"action":"fold"}' }] }; };
+
+    const { session, debugLog } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    // Simulate a YOUR_TURN output with missing handNumber
+    const output: ListenerOutput = {
+      type: 'YOUR_TURN',
+      summary: 'PREFLOP | As Kh',
+      state: makeView({ handNumber: 0, gameId: 'game-1' }),
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    expect(callAgentCalled).toBe(false);
+    expect(debugLog.some(d => d.label === 'YOUR_TURN_SKIPPED')).toBe(true);
+  });
+
+  it('skips YOUR_TURN with no gameId', () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"action":"fold"}' }] }; };
+
+    const { session, debugLog } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    const output: ListenerOutput = {
+      type: 'YOUR_TURN',
+      summary: 'PREFLOP | As Kh',
+      state: makeView({ handNumber: 1, gameId: '' }),
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    expect(callAgentCalled).toBe(false);
+    expect(debugLog.some(d => d.label === 'YOUR_TURN_SKIPPED')).toBe(true);
+  });
+
+  it('processes YOUR_TURN normally with valid game state', () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"action":"fold"}' }] }; };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    const output: ListenerOutput = {
+      type: 'YOUR_TURN',
+      summary: 'PREFLOP | As Kh',
+      state: makeView({ handNumber: 1, gameId: 'game-1' }),
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    // sendDecision is async — it chains onto lastDecision
+    expect(session.decisionSeq).toBe(1);
+  });
+});

@@ -86,6 +86,9 @@ export class GatewayWsClient {
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private emitFn: ((obj: Record<string, unknown>) => void) | null = null;
 
+  /** Called when the gateway reconnects after a previous successful connection. Not called on initial connect. */
+  onReconnect: (() => void) | null = null;
+
   constructor(opts?: { emit?: (obj: Record<string, unknown>) => void }) {
     this.token = resolveGatewayToken();
     this.url = resolveGatewayUrl();
@@ -254,6 +257,7 @@ export class GatewayWsClient {
 
     this.request('connect', params, { timeoutMs: 5000 })
       .then(() => {
+        const isReconnect = this.wasEverConnected;
         this._connected = true;
         this.wasEverConnected = true;
         this.backoffMs = 1000; // Reset backoff only after successful auth
@@ -264,6 +268,7 @@ export class GatewayWsClient {
         this.connectResolve = null;
         this.connectReject = null;
         this.emit({ type: 'GW_CONNECTED' });
+        if (isReconnect) this.onReconnect?.();
       })
       .catch((err) => {
         this.connectReject?.(err);
