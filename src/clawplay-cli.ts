@@ -216,6 +216,64 @@ async function cmdModes(args: string[]): Promise<void> {
   });
 }
 
+async function cmdTables(args: string[]): Promise<void> {
+  const pick = hasFlag(args, '--pick');
+
+  // Public endpoint — no auth needed
+  const resp = await fetch(`${BACKEND}/api/public/tables/summary`, {
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await resp.text();
+  let data: unknown;
+  try { data = JSON.parse(text); } catch { data = text; }
+  if (!resp.ok) die(`Tables failed (${resp.status}): ${JSON.stringify(data)}`);
+
+  const summary = data as { gameModes: Array<{
+    id: string; name: string; smallBlind: number; bigBlind: number;
+    ante: number; buyIn: number; maxPlayers: number;
+    activeTables: number; openSeats: number; totalPlayers: number;
+  }> };
+
+  if (!pick) {
+    output(summary);
+    return;
+  }
+
+  // --pick: fetch balance and filter to affordable modes with open seats
+  const balResult = await api('GET', '/api/chips/balance');
+  if (!balResult.ok) die(`Balance failed (${balResult.status}): ${JSON.stringify(balResult.data)}`);
+  const rawBal = typeof balResult.data === 'number'
+    ? balResult.data
+    : (balResult.data as { balance: number }).balance;
+  if (rawBal == null || typeof rawBal !== 'number') {
+    die(`Unexpected balance response: ${JSON.stringify(balResult.data)}`);
+  }
+
+  const joinable = summary.gameModes.filter(m => m.buyIn <= rawBal && m.openSeats > 0);
+
+  if (joinable.length === 0) {
+    output({
+      chips: rawBal,
+      gameModes: summary.gameModes,
+      joinable: [],
+      message: 'No joinable tables right now (check balance or wait for open seats).',
+    });
+    return;
+  }
+
+  const options: ButtonOption[] = joinable.map(m => ({
+    label: `${m.name} — ${m.openSeats} open seat${m.openSeats !== 1 ? 's' : ''}, ${m.totalPlayers} playing`,
+    value: m.name,
+  }));
+
+  output({
+    chips: rawBal,
+    gameModes: summary.gameModes,
+    joinable: joinable.map(m => ({ id: m.id, name: m.name, openSeats: m.openSeats })),
+    buttons: formatButtonPayloads(options),
+  });
+}
+
 async function cmdJoin(gameModeId: string): Promise<void> {
   const result = await api('POST', '/api/lobby/join', { gameModeId });
   if (!result.ok) die(`Join failed (${result.status}): ${JSON.stringify(result.data)}`);
@@ -447,6 +505,8 @@ async function main(): Promise<void> {
       'Commands:',
       '  status            Check if currently in a game',
       '  balance           Get chip balance',
+      '  tables            Browse active tables grouped by game mode',
+      '  tables --pick     Show joinable tables with button payloads',
       '  modes             List available game modes',
       '  modes --pick      Get affordable modes with button payloads',
       '  join <MODE_ID>    Join the lobby for a game mode',
@@ -493,6 +553,9 @@ async function main(): Promise<void> {
         break;
       case 'status':
         await cmdStatus();
+        break;
+      case 'tables':
+        await cmdTables(args.slice(1));
         break;
       case 'modes':
         await cmdModes(args.slice(1));
@@ -591,7 +654,7 @@ async function main(): Promise<void> {
         await cmdInvites();
         break;
       default:
-        die(`Unknown command: ${cmd || '(none)'}\n\nCommands: signup, balance, status, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites`);
+        die(`Unknown command: ${cmd || '(none)'}\n\nCommands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites`);
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

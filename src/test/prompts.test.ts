@@ -4,7 +4,7 @@
  * These complement the buildDecisionPrompt/buildSummary tests in clawplay-listener.test.ts.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
   buildReflectionPrompt,
   formatOpponentStats,
@@ -272,6 +272,58 @@ describe('buildReflectionPrompt', () => {
     expect(result).toContain('OPPONENT PROFILE');
     expect(result).toContain('RECENT HANDS');
     expect(result).toContain('CURRENT SESSION INSIGHTS');
+  });
+});
+
+// ── buildDecisionPrompt — chat instruction ──────────────────────────
+
+describe('buildDecisionPrompt — chat instruction', () => {
+  // Import inline to avoid polluting other tests with top-level import
+  let buildDecisionPrompt: typeof import('../prompts.js')['buildDecisionPrompt'];
+  let buildSummary: typeof import('../prompts.js')['buildSummary'];
+
+  beforeAll(async () => {
+    const mod = await import('../prompts.js');
+    buildDecisionPrompt = mod.buildDecisionPrompt;
+    buildSummary = mod.buildSummary;
+  });
+
+  it('includes chat field in response schema', () => {
+    const prompt = buildDecisionPrompt('PREFLOP | As Kh', '', [], [], [], '');
+    expect(prompt).toContain('"chat"');
+    expect(prompt).toContain('optional table talk');
+  });
+
+  it('includes chat instruction text', () => {
+    const prompt = buildDecisionPrompt('PREFLOP | As Kh', '', [], [], [], '');
+    expect(prompt).toContain('table talk everyone at the table can see');
+    expect(prompt).toContain('banter');
+  });
+});
+
+// ── buildReflectionPrompt — recentChatLines ─────────────────────────
+
+describe('buildReflectionPrompt — table talk section', () => {
+  it('includes TABLE TALK section when recentChatLines provided', () => {
+    const result = buildReflectionPrompt([], [], 'Some insights', ['💬 Alice: Nice hand!', '💬 Bob: GG']);
+    expect(result).toContain('TABLE TALK');
+    expect(result).toContain('Alice: Nice hand!');
+    expect(result).toContain('Bob: GG');
+  });
+
+  it('omits TABLE TALK section when recentChatLines is empty', () => {
+    const result = buildReflectionPrompt([], [], 'Some insights', []);
+    expect(result).not.toContain('TABLE TALK');
+  });
+
+  it('omits TABLE TALK section when recentChatLines not provided', () => {
+    const result = buildReflectionPrompt([], [], 'Some insights');
+    expect(result).not.toContain('TABLE TALK');
+  });
+
+  it('includes social reads mention in reflection instruction', () => {
+    const result = buildReflectionPrompt([], [], 'insights', ['💬 Alice: bluff!']);
+    expect(result).toContain('social reads from table talk');
   });
 });
 

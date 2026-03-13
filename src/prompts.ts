@@ -170,10 +170,12 @@ ${playbookSection}
 ═══ SITUATION ═══
 ${summary}
 ${handActionSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
+"chat" is optional table talk everyone at the table can see. Speak as yourself — banter, reactions, trash talk, mind games. Your personality determines when and how you talk. Leave empty or omit if you have nothing to say.
+
 Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. Use ONLY the exact action types listed in Actions above. 'bet' and 'raise' are DIFFERENT: 'bet' = first wager on a street (no one has bet yet), 'raise' = increasing an existing bet. If Actions shows 'bet 10-640', you MUST use "bet", NOT "raise". If Actions shows 'raise 40-500', you MUST use "raise", NOT "bet". Your amount MUST be within the shown range.
 
 Respond with ONLY a JSON object, no other text:
-{"action": "fold|check|call|bet|raise|all_in", "amount": <number if bet/raise, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>"}`;
+{"action": "fold|check|call|bet|raise|all_in", "amount": <number if bet/raise, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>", "chat": "<optional table talk — everyone sees this>"}`;
 }
 
 // ── Reflection prompt builder ────────────────────────────────────────
@@ -182,6 +184,7 @@ export function buildReflectionPrompt(
   opponentStatsLines: string[],
   recentHandLines: string[],
   currentInsights: string,
+  recentChatLines: string[] = [],
 ): string {
   const parts: string[] = [
     'You are between hands in a poker session. Review the session so far and update your running insights.',
@@ -192,9 +195,12 @@ export function buildReflectionPrompt(
   if (recentHandLines.length > 0) {
     parts.push(`\n═══ RECENT HANDS (last ${recentHandLines.length}) ═══\n${recentHandLines.join('\n')}`);
   }
+  if (recentChatLines.length > 0) {
+    parts.push(`\n═══ TABLE TALK (recent) ═══\n${recentChatLines.join('\n')}`);
+  }
   parts.push(`\n═══ CURRENT SESSION INSIGHTS ═══\n${currentInsights}`);
   parts.push(
-    '\nUpdate your session insights. Cover: opponent tendencies THIS SESSION, your strategy adjustments, stack management observations. 2-3 sentences. If nothing meaningful changed, return the same insights unchanged.',
+    '\nUpdate your session insights. Cover: opponent tendencies THIS SESSION, your strategy adjustments, stack management observations, and any social reads from table talk. 2-3 sentences. If nothing meaningful changed, return the same insights unchanged.',
     '\nRespond with ONLY JSON: {"insights": "..."}'
   );
   return parts.join('\n');

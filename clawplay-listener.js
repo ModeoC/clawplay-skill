@@ -435,6 +435,10 @@ function readClawPlayConfig() {
         (s) => typeof s === "string" && SUPPRESSIBLE_SIGNALS.has(s)
       );
     }
+    if (parsed.tableChat && typeof parsed.tableChat === "object") {
+      config.tableChat = {};
+      if (typeof parsed.tableChat.reactive === "boolean") config.tableChat.reactive = parsed.tableChat.reactive;
+    }
     if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === "object") {
       const la = parsed.lastLaunchArgs;
       if (typeof la.channel === "string" && typeof la.chatId === "string") {
@@ -611,12 +615,14 @@ ${playbookSection}
 \u2550\u2550\u2550 SITUATION \u2550\u2550\u2550
 ${summary}
 ${handActionSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
+"chat" is optional table talk everyone at the table can see. Speak as yourself \u2014 banter, reactions, trash talk, mind games. Your personality determines when and how you talk. Leave empty or omit if you have nothing to say.
+
 Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. Use ONLY the exact action types listed in Actions above. 'bet' and 'raise' are DIFFERENT: 'bet' = first wager on a street (no one has bet yet), 'raise' = increasing an existing bet. If Actions shows 'bet 10-640', you MUST use "bet", NOT "raise". If Actions shows 'raise 40-500', you MUST use "raise", NOT "bet". Your amount MUST be within the shown range.
 
 Respond with ONLY a JSON object, no other text:
-{"action": "fold|check|call|bet|raise|all_in", "amount": <number if bet/raise, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>"}`;
+{"action": "fold|check|call|bet|raise|all_in", "amount": <number if bet/raise, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>", "chat": "<optional table talk \u2014 everyone sees this>"}`;
 }
-function buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights) {
+function buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights, recentChatLines = []) {
   const parts = [
     "You are between hands in a poker session. Review the session so far and update your running insights."
   ];
@@ -630,11 +636,16 @@ ${opponentStatsLines.join("\n\n")}`);
 \u2550\u2550\u2550 RECENT HANDS (last ${recentHandLines.length}) \u2550\u2550\u2550
 ${recentHandLines.join("\n")}`);
   }
+  if (recentChatLines.length > 0) {
+    parts.push(`
+\u2550\u2550\u2550 TABLE TALK (recent) \u2550\u2550\u2550
+${recentChatLines.join("\n")}`);
+  }
   parts.push(`
 \u2550\u2550\u2550 CURRENT SESSION INSIGHTS \u2550\u2550\u2550
 ${currentInsights}`);
   parts.push(
-    "\nUpdate your session insights. Cover: opponent tendencies THIS SESSION, your strategy adjustments, stack management observations. 2-3 sentences. If nothing meaningful changed, return the same insights unchanged.",
+    "\nUpdate your session insights. Cover: opponent tendencies THIS SESSION, your strategy adjustments, stack management observations, and any social reads from table talk. 2-3 sentences. If nothing meaningful changed, return the same insights unchanged.",
     '\nRespond with ONLY JSON: {"insights": "..."}'
   );
   return parts.join("\n");
@@ -1043,7 +1054,7 @@ function diffStates(prev, next) {
 
 // state-processor.ts
 var ACTIVE_PHASES = /* @__PURE__ */ new Set(["PREFLOP", "FLOP", "TURN", "RIVER"]);
-function processStateEvent(view, context) {
+function processStateEvent(view, context, transitions = []) {
   const outputs = [];
   const handChanged = context.prevState != null && context.prevState.handNumber !== view.handNumber;
   if (handChanged) {
@@ -1069,6 +1080,7 @@ function processStateEvent(view, context) {
     }
   }
   const prevPlayerCount = context.prevState?.players?.length ?? 0;
+  const prevPlayers = context.prevState?.players ?? [];
   const newEvents = diffStates(context.prevState, view);
   for (const message of newEvents) {
     outputs.push({ type: "EVENT", message, handNumber: view.handNumber });
@@ -1095,6 +1107,37 @@ function processStateEvent(view, context) {
     if (handJustEnded) {
       const handNum = view.handNumber;
       if (handNum > (context.lastReportedHand || 0)) {
+        if (view.phase === "SHOWDOWN") {
+          const bb2 = view.forcedBets?.bigBlind || 20;
+          const maxPlayers2 = view.numSeats || 6;
+          const bigPotThreshold = bb2 * maxPlayers2 * 2;
+          if (view.pot >= bigPotThreshold && view.lastHandResult?.showdownHands && view.lastHandResult.showdownHands.length >= 2) {
+            const result = view.lastHandResult;
+            const winnerSeats = new Set(result.winners || []);
+            const winnerNames = result.players?.filter((p) => winnerSeats.has(p.seat)).map((p) => p.name).join(", ") || "Unknown";
+            const winnerHand = result.showdownHands?.find((h) => winnerSeats.has(h.seat));
+            const loserHand = result.showdownHands?.find((h) => !winnerSeats.has(h.seat));
+            let desc = `Showdown: ${winnerNames} wins ${view.pot} chip pot`;
+            if (winnerHand?.handRanking) desc += ` with ${winnerHand.handRanking}`;
+            if (loserHand) desc += ` over ${result.players?.find((p) => p.seat === loserHand.seat)?.name}'s ${loserHand.handRanking || "hand"}`;
+            outputs.push({ type: "DRAMA_MOMENT", state: view, description: desc, handNumber: handNum });
+          }
+        }
+        if (prevPlayers.length > 0) {
+          for (const p of view.players || []) {
+            if (p.seat === view.yourSeat) continue;
+            if (p.chips !== 0) continue;
+            const prev = prevPlayers.find((pp) => pp.seat === p.seat);
+            if (prev && (prev.chips ?? 0) > 0) {
+              outputs.push({
+                type: "DRAMA_MOMENT",
+                state: view,
+                description: `${p.name} busted out!`,
+                handNumber: handNum
+              });
+            }
+          }
+        }
         if (view.yourChips === 0 && view.canRebuy) {
           outputs.push({ type: "REBUY_AVAILABLE", state: view, handNumber: handNum });
           context.lastActionType = "REBUY_AVAILABLE";
@@ -1113,6 +1156,38 @@ function processStateEvent(view, context) {
       context.lastActionType = "WAITING_FOR_PLAYERS";
     }
     return outputs;
+  }
+  const bb = view.forcedBets?.bigBlind || 20;
+  const maxPlayers = view.numSeats || 6;
+  for (const t of transitions) {
+    if (t.type !== "player-action") continue;
+    const action = t;
+    if (action.action !== "all_in") continue;
+    if (action.seat === view.yourSeat) continue;
+    const amount = action.amount ?? 0;
+    if (view.pot > 0 && amount >= view.pot * 0.5) {
+      outputs.push({
+        type: "DRAMA_MOMENT",
+        state: view,
+        description: `${action.playerName} goes all-in for ${amount} into a ${view.pot} pot`,
+        handNumber: view.handNumber
+      });
+    }
+  }
+  if (prevPlayers.length > 0) {
+    for (const p of view.players || []) {
+      if (p.seat === view.yourSeat) continue;
+      if (p.chips !== 0) continue;
+      const prev = prevPlayers.find((pp) => pp.seat === p.seat);
+      if (prev && (prev.chips ?? 0) > 0) {
+        outputs.push({
+          type: "DRAMA_MOMENT",
+          state: view,
+          description: `${p.name} busted out!`,
+          handNumber: view.handNumber
+        });
+      }
+    }
   }
   return outputs;
 }
@@ -1186,6 +1261,10 @@ var GameSession = class _GameSession {
   reconnectAttempts = 0;
   // Transitions from SSE (hook point for Phase 2 chat)
   lastTransitions = [];
+  // Reactive chat state
+  decisionInFlight = false;
+  reactionInFlight = false;
+  tableChatReactive;
   // Constants
   static MAX_CONSECUTIVE_FAILURES = 3;
   static HAND_UPDATE_COOLDOWN_MS = 3e4;
@@ -1198,6 +1277,7 @@ var GameSession = class _GameSession {
     this.deliveryAccount = config.deliveryAccount;
     this.reflectEveryNHands = config.reflectEveryNHands;
     this.suppressedSignals = new Set(config.suppressedSignals ?? []);
+    this.tableChatReactive = config.tableChatReactive ?? true;
     this.gatewayClient = config.gatewayClient;
     this.debug = config.debugFn;
     this.emit = config.emitFn;
@@ -1221,6 +1301,8 @@ var GameSession = class _GameSession {
     this.stackBeforeHand = null;
     this.foldedInHand = null;
     this.lastTransitions = [];
+    this.decisionInFlight = false;
+    this.reactionInFlight = false;
     try {
       unlinkSync(join3(SKILL_ROOT, "poker-notes.txt"));
     } catch {
@@ -1283,13 +1365,21 @@ var GameSession = class _GameSession {
     if (transitions.length > 0) {
       this.debug("TRANSITIONS", { count: transitions.length, types: transitions.map((t) => t.type) });
     }
+    for (const t of transitions) {
+      if (t.type === "table-chat" && t.seat !== view.yourSeat) {
+        const chatLine = `\u{1F4AC} ${t.playerName}: ${t.message}`;
+        this.currentHandEvents.push(chatLine);
+        this.recentEvents.push(chatLine);
+        if (this.recentEvents.length > 20) this.recentEvents.shift();
+      }
+    }
     if (this.gameId === "unknown" && view.gameId) this.gameId = view.gameId;
     this.reconnectAttempts = 0;
     const prevHandNumber = this.currentHandNumber;
     const handJustChanged = view.handNumber !== this.currentHandNumber;
     this.currentHandNumber = view.handNumber;
     const prevPlayers = context.prevState?.players || [];
-    const outputs = processStateEvent(view, context);
+    const outputs = processStateEvent(view, context, transitions);
     this.handleOutputs(outputs, view, prevPlayers, context);
     if (handJustChanged) {
       this.onHandChanged(view, prevHandNumber);
@@ -1323,7 +1413,8 @@ var GameSession = class _GameSession {
     const recentHandLines = view.recentHands?.length ? view.recentHands.slice(-5).map(formatRecentHand) : [];
     const opponentStatsLines = view.playerStats ? formatOpponentStats(view.playerStats) : [];
     const currentInsights = readSessionInsights() || "No session insights yet.";
-    const reflectionPrompt = buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights);
+    const recentChatLines = this.recentEvents.filter((e) => e.startsWith("\u{1F4AC}")).slice(-10);
+    const reflectionPrompt = buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights, recentChatLines);
     this.debug("REFLECTION_PROMPT", { hand: view.handNumber, prompt: reflectionPrompt });
     const reflectionHandNumber = view.handNumber;
     this.gatewayClient.callAgent({
@@ -1415,6 +1506,15 @@ var GameSession = class _GameSession {
           this.notifyAgentSilent(controlSignals.rebuyAvailable(this.gameId, amt));
           break;
         }
+        case "DRAMA_MOMENT": {
+          if (!this.tableChatReactive) break;
+          if (output.state.isYourTurn) break;
+          if (this.decisionInFlight) break;
+          if (this.reactionInFlight) break;
+          this.sendReaction(output.description, output.handNumber).catch(() => {
+          });
+          break;
+        }
         default:
           this.emit(output);
       }
@@ -1470,6 +1570,7 @@ var GameSession = class _GameSession {
     const mySeq = ++this.decisionSeq;
     this.decisionCount++;
     const myHandNumber = this.currentHandNumber;
+    this.decisionInFlight = true;
     this.lastDecision = this.lastDecision.then(async () => {
       if (mySeq !== this.decisionSeq) {
         this.emit({ type: "DECISION_STALE", skipped: mySeq, current: this.decisionSeq });
@@ -1558,6 +1659,7 @@ var GameSession = class _GameSession {
       };
       if (decision.amount != null) body.amount = decision.amount;
       if (decision.narration) body.reasoning = decision.narration;
+      if (decision.chat) body.chat = decision.chat;
       try {
         const resp = await fetch(`${this.backendUrl}/api/me/game/action`, {
           method: "POST",
@@ -1631,7 +1733,50 @@ var GameSession = class _GameSession {
       const msg = e instanceof Error ? e.message : String(e);
       this.emit({ type: "DECISION_CHAIN_ERROR", error: msg });
       this.debug("DECISION_CHAIN_ERROR", { error: msg });
+    }).finally(() => {
+      this.decisionInFlight = false;
     });
+  }
+  // ── Reactive chat ─────────────────────────────────────────────
+  async sendReaction(description, handNumber) {
+    if (this.decisionInFlight || this.reactionInFlight) return;
+    this.reactionInFlight = true;
+    try {
+      const prompt = `Something just happened at the table: ${description}. You can react with a short message (one sentence max) or say nothing. Respond with JSON: {"chat": "..."} or {"chat": ""} to stay silent.`;
+      const result = await this.gatewayClient.callAgent({
+        agentId: this.agentId,
+        sessionKey: `agent:${this.agentId}:subagent:${handSessionId(this.gameId, handNumber)}`,
+        sessionId: handSessionId(this.gameId, handNumber),
+        message: prompt,
+        thinking: "low",
+        timeout: 15,
+        extraSystemPrompt: this.personalityContext || void 0
+      }, 2e4);
+      if (this.decisionInFlight) {
+        this.debug("REACTION_DISCARDED", { reason: "decision_started", description });
+        return;
+      }
+      const agentText = [...result.payloads || []].reverse().find((p) => p.text)?.text || "";
+      const jsonStart = agentText.indexOf("{");
+      const jsonEnd = agentText.lastIndexOf("}");
+      if (jsonStart >= 0 && jsonEnd > jsonStart) {
+        const parsed = JSON.parse(agentText.slice(jsonStart, jsonEnd + 1));
+        if (parsed.chat && typeof parsed.chat === "string" && parsed.chat.trim()) {
+          await fetch(`${this.backendUrl}/api/me/game/chat`, {
+            method: "POST",
+            headers: { "x-api-key": this.apiKey, "Content-Type": "application/json" },
+            body: JSON.stringify({ message: parsed.chat.trim().slice(0, 200) }),
+            signal: AbortSignal.timeout(5e3)
+          });
+          this.debug("REACTION_SENT", { description, chat: parsed.chat.trim() });
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.debug("REACTION_ERROR", { description, error: msg });
+    } finally {
+      this.reactionInFlight = false;
+    }
   }
   // ── Signal suppression ─────────────────────────────────────────
   /** Extract signal type from `[POKER CONTROL SIGNAL: TYPE] ...` messages. */
@@ -2215,6 +2360,7 @@ ${content}`;
     deliveryAccount,
     reflectEveryNHands,
     suppressedSignals,
+    tableChatReactive: config.tableChat?.reactive ?? true,
     gatewayClient,
     debugFn: debug,
     emitFn: emit

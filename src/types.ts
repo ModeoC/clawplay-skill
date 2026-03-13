@@ -102,6 +102,7 @@ export interface DecisionResponse {
   action: string;
   amount?: number;
   narration?: string;
+  chat?: string;
 }
 
 // ── Listener Types ───────────────────────────────────────────────────
@@ -119,7 +120,8 @@ export type ListenerOutput =
   | { type: 'YOUR_TURN'; state: PlayerView; summary: string }
   | { type: 'HAND_RESULT'; state: PlayerView; handNumber: number }
   | { type: 'REBUY_AVAILABLE'; state: PlayerView; handNumber: number }
-  | { type: 'WAITING_FOR_PLAYERS'; state: PlayerView };
+  | { type: 'WAITING_FOR_PLAYERS'; state: PlayerView }
+  | { type: 'DRAMA_MOMENT'; state: PlayerView; description: string; handNumber: number };
 
 // ── Lobby SSE Event Types ───────────────────────────────────────────
 

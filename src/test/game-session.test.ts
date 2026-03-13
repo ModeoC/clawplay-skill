@@ -1307,3 +1307,350 @@ describe('GameSession — YOUR_TURN guard (spurious state)', () => {
     expect(session.decisionSeq).toBe(1);
   });
 });
+
+// ── Table chat extraction ────────────────────────────────────────────
+
+describe('GameSession — table chat extraction from transitions', () => {
+  it('extracts table-chat transitions from other players into handEvents and recentEvents', () => {
+    const { session } = makeSession();
+    // Set up so hand doesn't change (avoids onHandChanged clearing currentHandEvents)
+    const prevView = makeView({ handNumber: 1, phase: 'FLOP' });
+    const context = makeContext({ prevState: prevView, prevPhase: 'FLOP' });
+    session.currentHandNumber = 1;
+
+    const transitions: GameTransition[] = [
+      { type: 'table-chat', seat: 1, playerName: 'Alice', userId: 'user-alice', message: 'Nice hand!' },
+    ];
+    const view = makeView({ handNumber: 1, phase: 'FLOP' });
+
+    session.handleStateEvent({ ...view, transitions }, context, () => {});
+
+    expect(session.currentHandEvents).toContain('💬 Alice: Nice hand!');
+    expect(session.recentEvents).toContain('💬 Alice: Nice hand!');
+  });
+
+  it('skips table-chat transitions from own seat', () => {
+    const { session } = makeSession();
+    const prevView = makeView({ handNumber: 1, phase: 'FLOP', yourSeat: 0 });
+    const context = makeContext({ prevState: prevView, prevPhase: 'FLOP' });
+    session.currentHandNumber = 1;
+
+    const transitions: GameTransition[] = [
+      { type: 'table-chat', seat: 0, playerName: 'Hero', userId: 'user-hero', message: 'GG' },
+    ];
+    const view = makeView({ handNumber: 1, phase: 'FLOP', yourSeat: 0 });
+
+    session.handleStateEvent({ ...view, transitions }, context, () => {});
+
+    expect(session.currentHandEvents).toEqual([]);
+  });
+
+  it('handles multiple chat transitions in one event', () => {
+    const { session } = makeSession();
+    const prevView = makeView({ handNumber: 1, phase: 'FLOP' });
+    const context = makeContext({ prevState: prevView, prevPhase: 'FLOP' });
+    session.currentHandNumber = 1;
+
+    const transitions: GameTransition[] = [
+      { type: 'table-chat', seat: 1, playerName: 'Alice', userId: 'user-alice', message: 'Wow' },
+      { type: 'table-chat', seat: 2, playerName: 'Bob', userId: 'user-bob', message: 'GG' },
+      { type: 'player-action', seat: 1, action: 'call', amount: 20 },
+    ];
+    const view = makeView({ handNumber: 1, phase: 'FLOP' });
+
+    session.handleStateEvent({ ...view, transitions }, context, () => {});
+
+    expect(session.currentHandEvents.filter(e => e.startsWith('💬'))).toHaveLength(2);
+    expect(session.currentHandEvents.some(e => e.includes('Alice'))).toBe(true);
+    expect(session.currentHandEvents.some(e => e.includes('Bob'))).toBe(true);
+  });
+});
+
+// ── Chat field in decisions ──────────────────────────────────────────
+
+describe('GameSession — chat field in action body', () => {
+  it('includes chat field from decision response in action submission', async () => {
+    const mockGw = makeMockGatewayClient('{"action":"call","amount":20,"narration":"I call.","chat":"Let\'s go!"}');
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '{"success":true}',
+    } as Response);
+
+    session.sendDecision('prompt', context);
+    await session.lastDecision;
+
+    // Find the action POST call
+    const actionCall = fetchSpy.mock.calls.find(c =>
+      typeof c[0] === 'string' && c[0].includes('/api/me/game/action'));
+    expect(actionCall).toBeTruthy();
+    const body = JSON.parse((actionCall![1] as RequestInit).body as string);
+    expect(body.chat).toBe("Let's go!");
+
+    fetchSpy.mockRestore();
+  });
+
+  it('omits chat field when not present in decision', async () => {
+    const mockGw = makeMockGatewayClient('{"action":"fold","narration":"I fold."}');
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '{"success":true}',
+    } as Response);
+
+    session.sendDecision('prompt', context);
+    await session.lastDecision;
+
+    const actionCall = fetchSpy.mock.calls.find(c =>
+      typeof c[0] === 'string' && c[0].includes('/api/me/game/action'));
+    expect(actionCall).toBeTruthy();
+    const body = JSON.parse((actionCall![1] as RequestInit).body as string);
+    expect(body.chat).toBeUndefined();
+
+    fetchSpy.mockRestore();
+  });
+});
+
+// ── DRAMA_MOMENT handling in handleOutputs ───────────────────────────
+
+describe('GameSession — DRAMA_MOMENT reactive chat', () => {
+  it('skips DRAMA_MOMENT when tableChatReactive is false', () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"chat":"wow"}' }] }; };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+      tableChatReactive: false,
+    });
+    const context = makeContext();
+
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView(),
+      description: 'Alice goes all-in',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    expect(callAgentCalled).toBe(false);
+  });
+
+  it('skips DRAMA_MOMENT when isYourTurn is true', () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"chat":"wow"}' }] }; };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView({ isYourTurn: true }),
+      description: 'Big showdown',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    expect(callAgentCalled).toBe(false);
+  });
+
+  it('skips DRAMA_MOMENT when decisionInFlight is true', () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"chat":"wow"}' }] }; };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.decisionInFlight = true;
+
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView(),
+      description: 'Alice busted out!',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    expect(callAgentCalled).toBe(false);
+  });
+
+  it('skips DRAMA_MOMENT when reactionInFlight is true', () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"chat":"wow"}' }] }; };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.reactionInFlight = true;
+
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView(),
+      description: 'Showdown!',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    expect(callAgentCalled).toBe(false);
+  });
+
+  it('fires sendReaction when all guards pass', async () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => {
+      callAgentCalled = true;
+      return { payloads: [{ text: '{"chat":"Wow, big play!"}' }] };
+    };
+
+    const { session, debugLog } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView(),
+      description: 'Alice goes all-in for 500',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    // Wait for the fire-and-forget promise to settle
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(callAgentCalled).toBe(true);
+  });
+
+  it('discards reaction if decision starts during subagent call', async () => {
+    const mockGw = makeMockGatewayClient();
+    let resolveCallAgent: (v: { payloads: Array<{ text: string }> }) => void;
+    mockGw.callAgent = () => new Promise((resolve) => { resolveCallAgent = resolve; });
+
+    const { session, debugLog } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView(),
+      description: 'Alice goes all-in',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    // Simulate a decision starting while reaction is in-flight
+    session.decisionInFlight = true;
+
+    // Resolve the callAgent
+    resolveCallAgent!({ payloads: [{ text: '{"chat":"wow"}' }] });
+    await new Promise(r => setTimeout(r, 50));
+
+    // Reaction should have been discarded
+    expect(debugLog.some(d => d.label === 'REACTION_DISCARDED')).toBe(true);
+    expect(session.reactionInFlight).toBe(false);
+  });
+
+  it('reactionInFlight is false after sendReaction completes', async () => {
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async () => ({ payloads: [{ text: '{"chat":""}' }] });
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView(),
+      description: 'Bust-out',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(session.reactionInFlight).toBe(false);
+  });
+
+  it('does not block decision-making (independent async path)', async () => {
+    const mockGw = makeMockGatewayClient();
+    let reactionStarted = false;
+    let decisionCompleted = false;
+
+    // Reaction takes a long time
+    const origCallAgent = mockGw.callAgent;
+    let callCount = 0;
+    mockGw.callAgent = async (...args: unknown[]) => {
+      callCount++;
+      if (callCount === 1) {
+        // First call is the reaction — simulate slow response
+        reactionStarted = true;
+        await new Promise(r => setTimeout(r, 200));
+        return { payloads: [{ text: '{"chat":"wow"}' }] };
+      }
+      // Second call is the decision
+      return { payloads: [{ text: '{"action":"fold","narration":"fold"}' }] };
+    };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    // Trigger DRAMA_MOMENT (fire-and-forget)
+    const dramaOutput: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView(),
+      description: 'Big pot',
+      handNumber: 1,
+    };
+    session.handleOutputs([dramaOutput], makeView(), [], context);
+
+    // Now immediately trigger a decision — it should proceed independently
+    session.sendDecision('prompt', context);
+
+    // Decision should have started (decisionSeq incremented)
+    expect(session.decisionSeq).toBe(1);
+  });
+
+  it('decisionInFlight is set correctly during sendDecision lifecycle', async () => {
+    const mockGw = makeMockGatewayClient('{"action":"fold","narration":"fold"}');
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+    session.currentHandNumber = 1;
+
+    expect(session.decisionInFlight).toBe(false);
+
+    session.sendDecision('prompt', context);
+    expect(session.decisionInFlight).toBe(true);
+
+    await session.lastDecision;
+    expect(session.decisionInFlight).toBe(false);
+  });
+});

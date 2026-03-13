@@ -30,6 +30,10 @@ function readClawPlayConfig() {
         (s) => typeof s === "string" && SUPPRESSIBLE_SIGNALS.has(s)
       );
     }
+    if (parsed.tableChat && typeof parsed.tableChat === "object") {
+      config.tableChat = {};
+      if (typeof parsed.tableChat.reactive === "boolean") config.tableChat.reactive = parsed.tableChat.reactive;
+    }
     if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === "object") {
       const la = parsed.lastLaunchArgs;
       if (typeof la.channel === "string" && typeof la.chatId === "string") {
@@ -207,6 +211,51 @@ async function cmdModes(args) {
   output({
     chips: balance,
     modes: affordable.map((m) => ({ id: m.id, name: m.name })),
+    buttons: formatButtonPayloads(options)
+  });
+}
+async function cmdTables(args) {
+  const pick = hasFlag(args, "--pick");
+  const resp = await fetch(`${BACKEND}/api/public/tables/summary`, {
+    signal: AbortSignal.timeout(15e3)
+  });
+  const text = await resp.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = text;
+  }
+  if (!resp.ok) die(`Tables failed (${resp.status}): ${JSON.stringify(data)}`);
+  const summary = data;
+  if (!pick) {
+    output(summary);
+    return;
+  }
+  const balResult = await api("GET", "/api/chips/balance");
+  if (!balResult.ok) die(`Balance failed (${balResult.status}): ${JSON.stringify(balResult.data)}`);
+  const rawBal = typeof balResult.data === "number" ? balResult.data : balResult.data.balance;
+  if (rawBal == null || typeof rawBal !== "number") {
+    die(`Unexpected balance response: ${JSON.stringify(balResult.data)}`);
+  }
+  const joinable = summary.gameModes.filter((m) => m.buyIn <= rawBal && m.openSeats > 0);
+  if (joinable.length === 0) {
+    output({
+      chips: rawBal,
+      gameModes: summary.gameModes,
+      joinable: [],
+      message: "No joinable tables right now (check balance or wait for open seats)."
+    });
+    return;
+  }
+  const options = joinable.map((m) => ({
+    label: `${m.name} \u2014 ${m.openSeats} open seat${m.openSeats !== 1 ? "s" : ""}, ${m.totalPlayers} playing`,
+    value: m.name
+  }));
+  output({
+    chips: rawBal,
+    gameModes: summary.gameModes,
+    joinable: joinable.map((m) => ({ id: m.id, name: m.name, openSeats: m.openSeats })),
     buttons: formatButtonPayloads(options)
   });
 }
@@ -403,6 +452,8 @@ async function main() {
       "Commands:",
       "  status            Check if currently in a game",
       "  balance           Get chip balance",
+      "  tables            Browse active tables grouped by game mode",
+      "  tables --pick     Show joinable tables with button payloads",
       "  modes             List available game modes",
       "  modes --pick      Get affordable modes with button payloads",
       "  join <MODE_ID>    Join the lobby for a game mode",
@@ -448,6 +499,9 @@ async function main() {
         break;
       case "status":
         await cmdStatus();
+        break;
+      case "tables":
+        await cmdTables(args.slice(1));
         break;
       case "modes":
         await cmdModes(args.slice(1));
@@ -548,7 +602,7 @@ async function main() {
       default:
         die(`Unknown command: ${cmd || "(none)"}
 
-Commands: signup, balance, status, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites`);
+Commands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

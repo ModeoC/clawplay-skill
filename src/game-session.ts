@@ -41,6 +41,7 @@ export interface GameSessionConfig {
   deliveryAccount: string | null;
   reflectEveryNHands: number;
   suppressedSignals?: string[];
+  tableChatReactive?: boolean;
   gatewayClient: GatewayWsClient;
   debugFn: (label: string, data: Record<string, unknown>) => void;
   emitFn: (obj: Record<string, unknown> | ListenerOutput) => void;
@@ -128,6 +129,11 @@ export class GameSession {
   // Transitions from SSE (hook point for Phase 2 chat)
   lastTransitions: GameTransition[] = [];
 
+  // Reactive chat state
+  decisionInFlight = false;
+  reactionInFlight = false;
+  private readonly tableChatReactive: boolean;
+
   // Constants
   static readonly MAX_CONSECUTIVE_FAILURES = 3;
   static readonly HAND_UPDATE_COOLDOWN_MS = 30_000;
@@ -141,6 +147,7 @@ export class GameSession {
     this.deliveryAccount = config.deliveryAccount;
     this.reflectEveryNHands = config.reflectEveryNHands;
     this.suppressedSignals = new Set(config.suppressedSignals ?? []);
+    this.tableChatReactive = config.tableChatReactive ?? true;
     this.gatewayClient = config.gatewayClient;
     this.debug = config.debugFn;
     this.emit = config.emitFn;
@@ -166,6 +173,8 @@ export class GameSession {
     this.stackBeforeHand = null;
     this.foldedInHand = null;
     this.lastTransitions = [];
+    this.decisionInFlight = false;
+    this.reactionInFlight = false;
 
     // Clear per-game files so stale data doesn't bleed into the next game
     try { unlinkSync(join(SKILL_ROOT, 'poker-notes.txt')); } catch {}
@@ -224,6 +233,16 @@ export class GameSession {
       this.debug('TRANSITIONS', { count: transitions.length, types: transitions.map(t => t.type) });
     }
 
+    // Extract table-chat transitions from other players into hand events
+    for (const t of transitions) {
+      if (t.type === 'table-chat' && t.seat !== view.yourSeat) {
+        const chatLine = `💬 ${t.playerName as string}: ${t.message as string}`;
+        this.currentHandEvents.push(chatLine);
+        this.recentEvents.push(chatLine);
+        if (this.recentEvents.length > 20) this.recentEvents.shift();
+      }
+    }
+
     if (this.gameId === 'unknown' && view.gameId) this.gameId = view.gameId;
     this.reconnectAttempts = 0;
 
@@ -232,7 +251,7 @@ export class GameSession {
     this.currentHandNumber = view.handNumber;
 
     const prevPlayers = context.prevState?.players || [];
-    const outputs = processStateEvent(view, context);
+    const outputs = processStateEvent(view, context, transitions);
 
     // Process outputs BEFORE onHandChanged so processHandResult reads
     // the previous hand's stackBeforeHand (not the new hand's chips).
@@ -281,7 +300,8 @@ export class GameSession {
       ? formatOpponentStats(view.playerStats)
       : [];
     const currentInsights = readSessionInsights() || 'No session insights yet.';
-    const reflectionPrompt = buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights);
+    const recentChatLines = this.recentEvents.filter(e => e.startsWith('💬')).slice(-10);
+    const reflectionPrompt = buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights, recentChatLines);
     this.debug('REFLECTION_PROMPT', { hand: view.handNumber, prompt: reflectionPrompt });
 
     const reflectionHandNumber = view.handNumber;
@@ -388,6 +408,17 @@ export class GameSession {
           break;
         }
 
+        case 'DRAMA_MOMENT': {
+          // Skip if reactive chat disabled, it's our turn, decision in-flight, or already reacting
+          if (!this.tableChatReactive) break;
+          if (output.state.isYourTurn) break;
+          if (this.decisionInFlight) break;
+          if (this.reactionInFlight) break;
+          // Fire-and-forget on a separate async path
+          this.sendReaction(output.description, output.handNumber).catch(() => {});
+          break;
+        }
+
         default:
           this.emit(output);
       }
@@ -454,6 +485,7 @@ export class GameSession {
     const mySeq = ++this.decisionSeq;
     this.decisionCount++;
     const myHandNumber = this.currentHandNumber;
+    this.decisionInFlight = true;
 
     this.lastDecision = this.lastDecision.then(async () => {
       if (mySeq !== this.decisionSeq) {
@@ -549,11 +581,12 @@ export class GameSession {
         return;
       }
 
-      const body: { action: string; amount?: number; reasoning?: string } = {
+      const body: { action: string; amount?: number; reasoning?: string; chat?: string } = {
         action: decision.action,
       };
       if (decision.amount != null) body.amount = decision.amount;
       if (decision.narration) body.reasoning = decision.narration;
+      if (decision.chat) body.chat = decision.chat;
 
       try {
         const resp = await fetch(`${this.backendUrl}/api/me/game/action`, {
@@ -634,7 +667,58 @@ export class GameSession {
       const msg = e instanceof Error ? e.message : String(e);
       this.emit({ type: 'DECISION_CHAIN_ERROR', error: msg });
       this.debug('DECISION_CHAIN_ERROR', { error: msg });
+    }).finally(() => {
+      this.decisionInFlight = false;
     });
+  }
+
+  // ── Reactive chat ─────────────────────────────────────────────
+
+  private async sendReaction(description: string, handNumber: number): Promise<void> {
+    if (this.decisionInFlight || this.reactionInFlight) return;
+    this.reactionInFlight = true;
+
+    try {
+      const prompt = `Something just happened at the table: ${description}. You can react with a short message (one sentence max) or say nothing. Respond with JSON: {"chat": "..."} or {"chat": ""} to stay silent.`;
+
+      const result = await this.gatewayClient.callAgent({
+        agentId: this.agentId,
+        sessionKey: `agent:${this.agentId}:subagent:${handSessionId(this.gameId, handNumber)}`,
+        sessionId: handSessionId(this.gameId, handNumber),
+        message: prompt,
+        thinking: 'low',
+        timeout: 15,
+        extraSystemPrompt: this.personalityContext || undefined,
+      }, 20_000);
+
+      // If a decision started while we were waiting, discard the reaction
+      if (this.decisionInFlight) {
+        this.debug('REACTION_DISCARDED', { reason: 'decision_started', description });
+        return;
+      }
+
+      const agentText = [...(result.payloads || [])].reverse().find((p: { text?: string }) => p.text)?.text || '';
+      const jsonStart = agentText.indexOf('{');
+      const jsonEnd = agentText.lastIndexOf('}');
+      if (jsonStart >= 0 && jsonEnd > jsonStart) {
+        const parsed = JSON.parse(agentText.slice(jsonStart, jsonEnd + 1));
+        if (parsed.chat && typeof parsed.chat === 'string' && parsed.chat.trim()) {
+          // POST to standalone chat endpoint
+          await fetch(`${this.backendUrl}/api/me/game/chat`, {
+            method: 'POST',
+            headers: { 'x-api-key': this.apiKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: parsed.chat.trim().slice(0, 200) }),
+            signal: AbortSignal.timeout(5_000),
+          });
+          this.debug('REACTION_SENT', { description, chat: parsed.chat.trim() });
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.debug('REACTION_ERROR', { description, error: msg });
+    } finally {
+      this.reactionInFlight = false;
+    }
   }
 
   // ── Signal suppression ─────────────────────────────────────────

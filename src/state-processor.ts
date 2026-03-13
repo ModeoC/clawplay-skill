@@ -11,11 +11,16 @@ import type {
   PlayerView,
   ListenerContext,
   ListenerOutput,
+  GameTransition,
 } from './types.js';
 
 const ACTIVE_PHASES = new Set(['PREFLOP', 'FLOP', 'TURN', 'RIVER']);
 
-export function processStateEvent(view: PlayerView, context: ListenerContext): ListenerOutput[] {
+export function processStateEvent(
+  view: PlayerView,
+  context: ListenerContext,
+  transitions: GameTransition[] = [],
+): ListenerOutput[] {
   const outputs: ListenerOutput[] = [];
 
   // ── Detect fast hand transition (hand N → N+1 without SHOWDOWN) ──
@@ -49,6 +54,7 @@ export function processStateEvent(view: PlayerView, context: ListenerContext): L
   }
 
   const prevPlayerCount = context.prevState?.players?.length ?? 0;
+  const prevPlayers = context.prevState?.players ?? [];
 
   const newEvents = diffStates(context.prevState, view);
   for (const message of newEvents) {
@@ -88,6 +94,41 @@ export function processStateEvent(view: PlayerView, context: ListenerContext): L
     if (handJustEnded) {
       const handNum = view.handNumber;
       if (handNum > (context.lastReportedHand || 0)) {
+        // Showdown drama detection (before HAND_RESULT, since this block returns early)
+        if (view.phase === 'SHOWDOWN') {
+          const bb = view.forcedBets?.bigBlind || 20;
+          const maxPlayers = view.numSeats || 6;
+          const bigPotThreshold = bb * maxPlayers * 2;
+          if (view.pot >= bigPotThreshold && view.lastHandResult?.showdownHands && view.lastHandResult.showdownHands.length >= 2) {
+            const result = view.lastHandResult;
+            const winnerSeats = new Set(result.winners || []);
+            const winnerNames = result.players?.filter(p => winnerSeats.has(p.seat)).map(p => p.name).join(', ') || 'Unknown';
+            const winnerHand = result.showdownHands?.find(h => winnerSeats.has(h.seat));
+            const loserHand = result.showdownHands?.find(h => !winnerSeats.has(h.seat));
+            let desc = `Showdown: ${winnerNames} wins ${view.pot} chip pot`;
+            if (winnerHand?.handRanking) desc += ` with ${winnerHand.handRanking}`;
+            if (loserHand) desc += ` over ${result.players?.find(p => p.seat === loserHand.seat)?.name}'s ${loserHand.handRanking || 'hand'}`;
+            outputs.push({ type: 'DRAMA_MOMENT', state: view, description: desc, handNumber: handNum });
+          }
+        }
+
+        // Bust-out drama detection (before HAND_RESULT)
+        if (prevPlayers.length > 0) {
+          for (const p of view.players || []) {
+            if (p.seat === view.yourSeat) continue;
+            if (p.chips !== 0) continue;
+            const prev = prevPlayers.find(pp => pp.seat === p.seat);
+            if (prev && (prev.chips ?? 0) > 0) {
+              outputs.push({
+                type: 'DRAMA_MOMENT',
+                state: view,
+                description: `${p.name} busted out!`,
+                handNumber: handNum,
+              });
+            }
+          }
+        }
+
         if (view.yourChips === 0 && view.canRebuy) {
           outputs.push({ type: 'REBUY_AVAILABLE', state: view, handNumber: handNum });
           context.lastActionType = 'REBUY_AVAILABLE';
@@ -107,6 +148,44 @@ export function processStateEvent(view: PlayerView, context: ListenerContext): L
       context.lastActionType = 'WAITING_FOR_PLAYERS';
     }
     return outputs;
+  }
+
+  // ── Drama detection (for reactive chat) — mid-hand triggers ──
+  const bb = view.forcedBets?.bigBlind || 20;
+  const maxPlayers = view.numSeats || 6;
+
+  // 1. Significant all-in by another player (≥50% of pot)
+  for (const t of transitions) {
+    if (t.type !== 'player-action') continue;
+    const action = t as { type: 'player-action'; seat?: number; action?: string; amount?: number; playerName?: string };
+    if (action.action !== 'all_in') continue;
+    if (action.seat === view.yourSeat) continue; // don't react to own plays
+    const amount = action.amount ?? 0;
+    if (view.pot > 0 && amount >= view.pot * 0.5) {
+      outputs.push({
+        type: 'DRAMA_MOMENT',
+        state: view,
+        description: `${action.playerName} goes all-in for ${amount} into a ${view.pot} pot`,
+        handNumber: view.handNumber,
+      });
+    }
+  }
+
+  // 2. Bust-out — another player's chips drop to 0 (mid-hand, not at hand end)
+  if (prevPlayers.length > 0) {
+    for (const p of view.players || []) {
+      if (p.seat === view.yourSeat) continue;
+      if (p.chips !== 0) continue;
+      const prev = prevPlayers.find(pp => pp.seat === p.seat);
+      if (prev && (prev.chips ?? 0) > 0) {
+        outputs.push({
+          type: 'DRAMA_MOMENT',
+          state: view,
+          description: `${p.name} busted out!`,
+          handNumber: view.handNumber,
+        });
+      }
+    }
   }
 
   return outputs;

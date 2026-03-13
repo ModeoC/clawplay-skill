@@ -742,6 +742,7 @@ async function main(): Promise<void> {
     deliveryAccount,
     reflectEveryNHands,
     suppressedSignals,
+    tableChatReactive: config.tableChat?.reactive ?? true,
     gatewayClient,
     debugFn: debug,
     emitFn: emit,
