@@ -30,6 +30,12 @@ fi
 SCOPE_UNIT="clawplay-listener-${SCOPE_ID}"
 
 if [ "$USE_SCOPE" = "true" ]; then
+  # Write sentinel PID before stopping the old scope so the old listener's
+  # SIGTERM handler sees isBeingReplaced()=true and skips the leave API call.
+  PID_FILE="$SCRIPT_DIR/.clawplay-listener-${SCOPE_ID}.pid"
+  if [ -f "$PID_FILE" ]; then
+    echo "$$" > "$PID_FILE"
+  fi
   systemctl --user stop "${SCOPE_UNIT}.scope" 2>/dev/null || true
   systemd-run --user --scope --quiet --unit="$SCOPE_UNIT" -- \
     node "$SCRIPT_DIR/clawplay-listener.js" "$@" > /dev/null 2>&1 &

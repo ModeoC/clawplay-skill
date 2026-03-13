@@ -116,6 +116,9 @@ export class GameSession {
   // Personality context (loaded once at startup)
   personalityContext = '';
 
+  // Decision counter (total decisions attempted across all hands)
+  decisionCount = 0;
+
   // SSE connection state
   sseFirstConnect = true;
   lastEventTime = Date.now();
@@ -449,6 +452,7 @@ export class GameSession {
 
   sendDecision(prompt: string, context: ListenerContext): void {
     const mySeq = ++this.decisionSeq;
+    this.decisionCount++;
     const myHandNumber = this.currentHandNumber;
 
     this.lastDecision = this.lastDecision.then(async () => {

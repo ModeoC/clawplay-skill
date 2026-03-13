@@ -365,6 +365,19 @@ describe('GameSession — sendDecision', () => {
     await session.lastDecision;
   });
 
+  it('increments decisionCount on each call', async () => {
+    const { session } = makeSession();
+    const context = makeContext();
+
+    expect(session.decisionCount).toBe(0);
+    session.sendDecision('prompt 1', context);
+    expect(session.decisionCount).toBe(1);
+    session.sendDecision('prompt 2', context);
+    expect(session.decisionCount).toBe(2);
+
+    await session.lastDecision;
+  });
+
   it('emits DECISION_STALE when a newer decision supersedes', async () => {
     const mockGw = makeMockGatewayClient();
     let callCount = 0;
@@ -1191,6 +1204,21 @@ describe('GameSession — resetForNewGame', () => {
     expect(session.stackBeforeHand).toBeNull();
     expect(session.foldedInHand).toBeNull();
     expect(session.lastTransitions).toEqual([]);
+  });
+
+  it('preserves decisionCount across resets (lifetime counter)', () => {
+    const { session } = makeSession();
+    const context = makeContext();
+
+    session.sendDecision('prompt 1', context);
+    session.sendDecision('prompt 2', context);
+    expect(session.decisionCount).toBe(2);
+
+    session.resetForNewGame();
+
+    expect(session.decisionCount).toBe(2); // Not reset — it's a lifetime counter
+    session.sendDecision('prompt 3', context);
+    expect(session.decisionCount).toBe(3);
   });
 });
 

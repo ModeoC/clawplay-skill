@@ -1177,6 +1177,8 @@ var GameSession = class _GameSession {
   foldedInHand = null;
   // Personality context (loaded once at startup)
   personalityContext = "";
+  // Decision counter (total decisions attempted across all hands)
+  decisionCount = 0;
   // SSE connection state
   sseFirstConnect = true;
   lastEventTime = Date.now();
@@ -1466,6 +1468,7 @@ var GameSession = class _GameSession {
   // ── Decision orchestration ──────────────────────────────────────
   sendDecision(prompt, context) {
     const mySeq = ++this.decisionSeq;
+    this.decisionCount++;
     const myHandNumber = this.currentHandNumber;
     this.lastDecision = this.lastDecision.then(async () => {
       if (mySeq !== this.decisionSeq) {
@@ -1814,6 +1817,21 @@ function runUnifiedMode(config) {
     const HEARTBEAT_TIMEOUT_MS = 9e4;
     const MAX_RECONNECT_ATTEMPTS = 3;
     const RECONNECT_DELAY_MS = 3e3;
+    const startTime = Date.now();
+    const healthCheck = setInterval(() => {
+      const mem = process.memoryUsage();
+      emit({
+        type: "HEALTH_CHECK",
+        uptimeMin: Math.round((Date.now() - startTime) / 6e4),
+        rss: `${Math.round(mem.rss / 1048576)}MB`,
+        heap: `${Math.round(mem.heapUsed / 1048576)}/${Math.round(mem.heapTotal / 1048576)}MB`,
+        gwConnected: gatewayClient.isConnected(),
+        sseLastEvent: `${Math.round((Date.now() - session.lastEventTime) / 1e3)}s ago`,
+        sseReconnects: session.reconnectAttempts,
+        inGame,
+        decisions: session.decisionCount
+      });
+    }, 5 * 6e4);
     let heartbeatCheckRunning = false;
     const heartbeatCheck = setInterval(async () => {
       if (heartbeatCheckRunning) return;
@@ -1836,6 +1854,7 @@ function runUnifiedMode(config) {
     }, 15e3);
     function fatalExit(reason) {
       clearInterval(heartbeatCheck);
+      clearInterval(healthCheck);
       emit({ type: "FATAL_EXIT", reason });
       es?.close();
       gatewayClient.stop();

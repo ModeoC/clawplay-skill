@@ -180,6 +180,24 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
     const HEARTBEAT_TIMEOUT_MS = 90_000;
     const MAX_RECONNECT_ATTEMPTS = 3;
     const RECONNECT_DELAY_MS = 3_000;
+    const startTime = Date.now();
+
+    // Periodic health check — captures memory, connection state, and activity
+    // so long-running idle periods can be diagnosed after the fact.
+    const healthCheck = setInterval(() => {
+      const mem = process.memoryUsage();
+      emit({
+        type: 'HEALTH_CHECK',
+        uptimeMin: Math.round((Date.now() - startTime) / 60_000),
+        rss: `${Math.round(mem.rss / 1048576)}MB`,
+        heap: `${Math.round(mem.heapUsed / 1048576)}/${Math.round(mem.heapTotal / 1048576)}MB`,
+        gwConnected: gatewayClient.isConnected(),
+        sseLastEvent: `${Math.round((Date.now() - session.lastEventTime) / 1000)}s ago`,
+        sseReconnects: session.reconnectAttempts,
+        inGame,
+        decisions: session.decisionCount,
+      });
+    }, 5 * 60_000);
 
     let heartbeatCheckRunning = false;
     const heartbeatCheck = setInterval(async () => {
@@ -205,6 +223,7 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
 
     function fatalExit(reason: string): void {
       clearInterval(heartbeatCheck);
+      clearInterval(healthCheck);
       emit({ type: 'FATAL_EXIT', reason });
       es?.close();
       gatewayClient.stop();
