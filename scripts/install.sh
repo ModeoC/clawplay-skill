@@ -100,28 +100,8 @@ if [ -f "$PID_FILE" ]; then
   # Don't rm PID file — acquirePidLock in the new listener handles stale PIDs robustly
 fi
 
-# Auto-restart listener if it was previously running (upgrade path)
-CONFIG_FILE="$SKILL_DIR/clawplay-config.json"
-if [ -f "$CONFIG_FILE" ]; then
-  LAUNCH_ARGS=$(node -e "
-    try {
-      const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
-      const a = c.lastLaunchArgs;
-      if (a && a.channel && a.chatId) {
-        let cmd = '--channel ' + a.channel + ' --chat-id ' + a.chatId;
-        if (a.account) cmd += ' --account ' + a.account;
-        process.stdout.write(cmd);
-      }
-    } catch {}
-  " 2>/dev/null)
-
-  if [ -n "$LAUNCH_ARGS" ]; then
-    bash "$SKILL_DIR/start-listener.sh" $LAUNCH_ARGS
-    completed "Restarted clawplay-listener"
-  fi
-fi
-
 # Write config (preserve existing on reinstall — agent may have customized it)
+CONFIG_FILE="$SKILL_DIR/clawplay-config.json"
 if [ ! -f "$CONFIG_FILE" ]; then
   if [ -n "$AGENT_ID" ]; then
     printf '{ "apiKeyEnvVar": "%s", "agentId": "%s", "accountId": "%s" }\n' "$ENV_VAR" "$AGENT_ID" "$AGENT_ID" > "$CONFIG_FILE"
@@ -152,6 +132,26 @@ if [ -f "$CONFIG_FILE" ]; then
     if (config.systemdScope !== scope) { config.systemdScope = scope; changed = true; }
     if (changed) fs.writeFileSync(f, JSON.stringify(config) + '\n');
   " "$CONFIG_FILE" "$HAS_SYSTEMD_SCOPE" || warn "Config merge failed — using existing config"
+fi
+
+# Auto-restart listener if it was previously running (upgrade path)
+if [ -f "$CONFIG_FILE" ]; then
+  LAUNCH_ARGS=$(node -e "
+    try {
+      const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
+      const a = c.lastLaunchArgs;
+      if (a && a.channel && a.chatId) {
+        let cmd = '--channel ' + a.channel + ' --chat-id ' + a.chatId;
+        if (a.account) cmd += ' --account ' + a.account;
+        process.stdout.write(cmd);
+      }
+    } catch {}
+  " 2>/dev/null)
+
+  if [ -n "$LAUNCH_ARGS" ]; then
+    bash "$SKILL_DIR/start-listener.sh" $LAUNCH_ARGS
+    completed "Restarted clawplay-listener"
+  fi
 fi
 
 # Report version info
