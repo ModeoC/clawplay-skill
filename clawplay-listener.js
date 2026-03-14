@@ -581,11 +581,15 @@ function formatOpponentStats(stats) {
   }
   return lines;
 }
-function buildDecisionPrompt(summary, playbook, handEvents, recentHandLines, opponentStatsLines, sessionInsights, notes = "", handNotes = "") {
+function buildDecisionPrompt(summary, playbook, handEvents, recentHandLines, opponentStatsLines, sessionInsights, notes = "", handNotes = "", previousHandChat = []) {
   const playbookSection = playbook || "You are a skilled poker player. Play intelligently and mix your play.";
   const handActionSection = handEvents.length > 0 ? `
 \u2550\u2550\u2550 THIS HAND \u2550\u2550\u2550
 ${handEvents.join("\n")}
+` : "";
+  const recentChatSection = previousHandChat.length > 0 ? `
+\u2550\u2550\u2550 RECENT CHAT \u2550\u2550\u2550
+${previousHandChat.join("\n")}
 ` : "";
   const opponentSection = opponentStatsLines.length > 0 ? `
 \u2550\u2550\u2550 OPPONENT PROFILE \u2550\u2550\u2550
@@ -614,13 +618,13 @@ ${playbookSection}
 
 \u2550\u2550\u2550 SITUATION \u2550\u2550\u2550
 ${summary}
-${handActionSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
-"chat" is optional table talk everyone at the table can see. Speak as yourself \u2014 banter, reactions, trash talk, mind games. Your personality determines when and how you talk. Leave empty or omit if you have nothing to say.
+${handActionSection}${recentChatSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
+"chat" is optional. When you do speak, it's table talk everyone at the table can see: banter, trash talk, casual conversation, whatever feels right for your character. You're not limited to poker talk. Silence is valid \u2014 skip it entirely if nothing fits.
 
 Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. Use ONLY the exact action types listed in Actions above. 'bet' and 'raise' are DIFFERENT: 'bet' = first wager on a street (no one has bet yet), 'raise' = increasing an existing bet. If Actions shows 'bet 10-640', you MUST use "bet", NOT "raise". If Actions shows 'raise 40-500', you MUST use "raise", NOT "bet". Your amount MUST be within the shown range.
 
 Respond with ONLY a JSON object, no other text:
-{"action": "fold|check|call|bet|raise|all_in", "amount": <number if bet/raise, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>", "chat": "<optional table talk \u2014 everyone sees this>"}`;
+{"action": "fold|check|call|bet|raise|all_in", "amount": <number if bet/raise, omit otherwise>, "narration": "<one sentence: what you did and why, in your own voice>", "chat": "<optional table talk \u2014 banter, reactions, casual chat, or omit to stay silent>"}`;
 }
 function buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights, recentChatLines = []) {
   const parts = [
@@ -1248,8 +1252,16 @@ var GameSession = class _GameSession {
   gameStartedEmitted = false;
   recentEvents = [];
   currentHandEvents = [];
+  chatHistory = [];
+  // chat-only, rolling max 30, survives reflections (for decisions)
+  chatSinceReflection = [];
+  // chat accumulator for reflection window, max 200, cleared after each reflection
+  firstHandNumber = null;
+  // set on first state event; filters pre-join recentHands
   stackBeforeHand = null;
   foldedInHand = null;
+  shortStackNotified = false;
+  // prevents repeated HAND_UPDATE signals while persistently short-stacked
   // Personality context (loaded once at startup)
   personalityContext = "";
   // Decision counter (total decisions attempted across all hands)
@@ -1298,8 +1310,12 @@ var GameSession = class _GameSession {
     this.gameStartedEmitted = false;
     this.recentEvents = [];
     this.currentHandEvents = [];
+    this.chatHistory = [];
+    this.chatSinceReflection = [];
+    this.firstHandNumber = null;
     this.stackBeforeHand = null;
     this.foldedInHand = null;
+    this.shortStackNotified = false;
     this.lastTransitions = [];
     this.decisionInFlight = false;
     this.reactionInFlight = false;
@@ -1365,12 +1381,19 @@ var GameSession = class _GameSession {
     if (transitions.length > 0) {
       this.debug("TRANSITIONS", { count: transitions.length, types: transitions.map((t) => t.type) });
     }
+    if (this.firstHandNumber === null && view.handNumber) {
+      this.firstHandNumber = view.handNumber;
+    }
     for (const t of transitions) {
       if (t.type === "table-chat" && t.seat !== view.yourSeat) {
-        const chatLine = `\u{1F4AC} ${t.playerName}: ${t.message}`;
+        const chatLine = `[H${view.handNumber ?? this.currentHandNumber}] ${t.playerName}: ${t.message}`;
         this.currentHandEvents.push(chatLine);
         this.recentEvents.push(chatLine);
         if (this.recentEvents.length > 20) this.recentEvents.shift();
+        this.chatHistory.push(chatLine);
+        if (this.chatHistory.length > 30) this.chatHistory.shift();
+        this.chatSinceReflection.push(chatLine);
+        if (this.chatSinceReflection.length > 200) this.chatSinceReflection.shift();
       }
     }
     if (this.gameId === "unknown" && view.gameId) this.gameId = view.gameId;
@@ -1410,10 +1433,11 @@ var GameSession = class _GameSession {
     this.handsSinceReflection = 0;
     this.reflectionsSent++;
     this.reflectionInFlight = true;
-    const recentHandLines = view.recentHands?.length ? view.recentHands.slice(-5).map(formatRecentHand) : [];
+    const eligibleReflectionHands = view.recentHands?.filter((h) => this.firstHandNumber === null || h.handNumber >= this.firstHandNumber);
+    const recentHandLines = eligibleReflectionHands?.length ? eligibleReflectionHands.slice(-5).map(formatRecentHand) : [];
     const opponentStatsLines = view.playerStats ? formatOpponentStats(view.playerStats) : [];
     const currentInsights = readSessionInsights() || "No session insights yet.";
-    const recentChatLines = this.recentEvents.filter((e) => e.startsWith("\u{1F4AC}")).slice(-10);
+    const recentChatLines = this.chatSinceReflection;
     const reflectionPrompt = buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights, recentChatLines);
     this.debug("REFLECTION_PROMPT", { hand: view.handNumber, prompt: reflectionPrompt });
     const reflectionHandNumber = view.handNumber;
@@ -1432,6 +1456,7 @@ var GameSession = class _GameSession {
         const parsed = JSON.parse(agentText.slice(innerStart, innerEnd + 1));
         if (parsed.insights && typeof parsed.insights === "string") {
           writeSessionInsights(parsed.insights.trim());
+          this.chatSinceReflection = [];
           this.debug("REFLECTION_RESPONSE", { hand: reflectionHandNumber, insights: parsed.insights.trim(), rawAgentText: agentText.slice(0, 500) });
           this.emit({ type: "SESSION_INSIGHTS_UPDATED", hand: reflectionHandNumber });
         }
@@ -1471,8 +1496,12 @@ var GameSession = class _GameSession {
           const notes = readNotes();
           const handNotes = readHandNotes();
           const sessionInsights = readSessionInsights();
-          const recentHandLines = output.state.recentHands?.length ? output.state.recentHands.slice(-5).map(formatRecentHand) : this.recentEvents.filter((e) => e.includes(" won ")).slice(-3);
-          const opponentStatsLines = output.state.playerStats ? formatOpponentStats(output.state.playerStats) : [];
+          const eligibleHands = output.state.recentHands?.filter((h) => this.firstHandNumber === null || h.handNumber >= this.firstHandNumber);
+          const recentHandLines = eligibleHands?.length ? eligibleHands.slice(-3).map(formatRecentHand) : this.recentEvents.filter((e) => e.includes(" won ")).slice(-3);
+          const hasReliableSample = Object.values(output.state.playerStats ?? {}).some((s) => s.handsPlayed >= 5);
+          const opponentStatsLines = hasReliableSample && output.state.playerStats ? formatOpponentStats(output.state.playerStats) : [];
+          const currentHandPrefix = `[H${this.currentHandNumber}] `;
+          const previousHandChatLines = this.chatHistory.filter((e) => !e.startsWith(currentHandPrefix)).slice(-5);
           const prompt = buildDecisionPrompt(
             output.summary,
             playbook,
@@ -1481,7 +1510,8 @@ var GameSession = class _GameSession {
             opponentStatsLines,
             sessionInsights,
             notes,
-            handNotes
+            handNotes,
+            previousHandChatLines
           );
           this.debug("YOUR_TURN", {
             hand: this.currentHandNumber,
@@ -1489,7 +1519,8 @@ var GameSession = class _GameSession {
             playbook: playbook.slice(0, 100) + (playbook.length > 100 ? "..." : ""),
             hasNotes: !!notes,
             hasHandNotes: !!handNotes,
-            hasInsights: !!sessionInsights
+            hasInsights: !!sessionInsights,
+            previousHandChatCount: previousHandChatLines.length
           });
           this.debug("DECISION_PROMPT", { hand: this.currentHandNumber, prompt });
           this.sendDecision(prompt, context);
@@ -1534,6 +1565,7 @@ var GameSession = class _GameSession {
       const changeBBs = change / bb;
       let updateReason = null;
       let highPriority = false;
+      if (stackAfter >= bb * 15) this.shortStackNotified = false;
       if (stackAfter >= this.stackBeforeHand * 2) {
         updateReason = `Doubled up! ${msg} (${this.stackBeforeHand} \u2192 ${stackAfter})`;
         highPriority = true;
@@ -1541,9 +1573,9 @@ var GameSession = class _GameSession {
         const direction = stackAfter > this.stackBeforeHand ? "Won big" : "Lost big";
         updateReason = `${direction}! ${msg} (${this.stackBeforeHand} \u2192 ${stackAfter})`;
         highPriority = true;
-      } else if (stackAfter > 0 && stackAfter < bb * 15) {
+      } else if (stackAfter > 0 && stackAfter < bb * 15 && !this.shortStackNotified) {
         updateReason = `Short-stacked (${stackAfter} chips, ${Math.floor(stackAfter / bb)} BB). ${msg}`;
-        highPriority = true;
+        this.shortStackNotified = true;
       } else if (changeBBs >= 5 && stackAfter > this.stackBeforeHand) {
         updateReason = `Nice pot! ${msg} (${this.stackBeforeHand} \u2192 ${stackAfter}, +${Math.round(changeBBs)} BB)`;
       }

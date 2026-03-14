@@ -3,5 +3,7 @@
   "listenerMode": "lobby",
   "reflectEveryNHands": 3,
   "maxSessionsPerDay": 5,
-  "suppressedSignals": []
+  "suppressedSignals": [
+    "DECISION_STATUS"
+  ]
 }

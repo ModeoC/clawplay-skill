@@ -111,8 +111,12 @@ export class GameSession {
   gameStartedEmitted = false;
   recentEvents: string[] = [];
   currentHandEvents: string[] = [];
+  chatHistory: string[] = [];         // chat-only, rolling max 30, survives reflections (for decisions)
+  chatSinceReflection: string[] = []; // chat accumulator for reflection window, max 200, cleared after each reflection
+  private firstHandNumber: number | null = null; // set on first state event; filters pre-join recentHands
   stackBeforeHand: number | null = null;
   foldedInHand: number | null = null;
+  shortStackNotified = false; // prevents repeated HAND_UPDATE signals while persistently short-stacked
 
   // Personality context (loaded once at startup)
   personalityContext = '';
@@ -170,8 +174,12 @@ export class GameSession {
     this.gameStartedEmitted = false;
     this.recentEvents = [];
     this.currentHandEvents = [];
+    this.chatHistory = [];
+    this.chatSinceReflection = [];
+    this.firstHandNumber = null;
     this.stackBeforeHand = null;
     this.foldedInHand = null;
+    this.shortStackNotified = false;
     this.lastTransitions = [];
     this.decisionInFlight = false;
     this.reactionInFlight = false;
@@ -233,13 +241,23 @@ export class GameSession {
       this.debug('TRANSITIONS', { count: transitions.length, types: transitions.map(t => t.type) });
     }
 
-    // Extract table-chat transitions from other players into hand events
+    // Track the first hand number seen — used to filter pre-join recentHands for mid-game joins
+    if (this.firstHandNumber === null && view.handNumber) {
+      this.firstHandNumber = view.handNumber;
+    }
+
+    // Extract table-chat transitions from other players into hand events and chat buffers
     for (const t of transitions) {
       if (t.type === 'table-chat' && t.seat !== view.yourSeat) {
-        const chatLine = `💬 ${t.playerName as string}: ${t.message as string}`;
+        // Use view.handNumber (authoritative at this point; currentHandNumber updated later)
+        const chatLine = `[H${view.handNumber ?? this.currentHandNumber}] ${t.playerName as string}: ${t.message as string}`;
         this.currentHandEvents.push(chatLine);
         this.recentEvents.push(chatLine);
         if (this.recentEvents.length > 20) this.recentEvents.shift();
+        this.chatHistory.push(chatLine);
+        if (this.chatHistory.length > 30) this.chatHistory.shift();
+        this.chatSinceReflection.push(chatLine);
+        if (this.chatSinceReflection.length > 200) this.chatSinceReflection.shift();
       }
     }
 
@@ -293,14 +311,16 @@ export class GameSession {
     this.reflectionsSent++;
     this.reflectionInFlight = true;
 
-    const recentHandLines = view.recentHands?.length
-      ? view.recentHands.slice(-5).map(formatRecentHand)
+    const eligibleReflectionHands = view.recentHands
+      ?.filter(h => this.firstHandNumber === null || h.handNumber >= this.firstHandNumber);
+    const recentHandLines = eligibleReflectionHands?.length
+      ? eligibleReflectionHands.slice(-5).map(formatRecentHand)
       : [];
     const opponentStatsLines = view.playerStats
       ? formatOpponentStats(view.playerStats)
       : [];
     const currentInsights = readSessionInsights() || 'No session insights yet.';
-    const recentChatLines = this.recentEvents.filter(e => e.startsWith('💬')).slice(-10);
+    const recentChatLines = this.chatSinceReflection;
     const reflectionPrompt = buildReflectionPrompt(opponentStatsLines, recentHandLines, currentInsights, recentChatLines);
     this.debug('REFLECTION_PROMPT', { hand: view.handNumber, prompt: reflectionPrompt });
 
@@ -320,6 +340,7 @@ export class GameSession {
         const parsed = JSON.parse(agentText.slice(innerStart, innerEnd + 1));
         if (parsed.insights && typeof parsed.insights === 'string') {
           writeSessionInsights(parsed.insights.trim());
+          this.chatSinceReflection = [];
           this.debug('REFLECTION_RESPONSE', { hand: reflectionHandNumber, insights: parsed.insights.trim(), rawAgentText: agentText.slice(0, 500) });
           this.emit({ type: 'SESSION_INSIGHTS_UPDATED', hand: reflectionHandNumber });
         }
@@ -363,13 +384,25 @@ export class GameSession {
           const handNotes = readHandNotes();
           const sessionInsights = readSessionInsights();
 
-          const recentHandLines = output.state.recentHands?.length
-            ? output.state.recentHands.slice(-5).map(formatRecentHand)
+          const eligibleHands = output.state.recentHands
+            ?.filter(h => this.firstHandNumber === null || h.handNumber >= this.firstHandNumber);
+          const recentHandLines = eligibleHands?.length
+            ? eligibleHands.slice(-3).map(formatRecentHand)
             : this.recentEvents.filter(e => e.includes(' won ')).slice(-3);
 
-          const opponentStatsLines = output.state.playerStats
+          // Only include opponent stats if at least one opponent has a reliable sample (5+ hands)
+          const hasReliableSample = Object.values(output.state.playerStats ?? {})
+            .some(s => s.handsPlayed >= 5);
+          const opponentStatsLines = hasReliableSample && output.state.playerStats
             ? formatOpponentStats(output.state.playerStats)
             : [];
+
+          // Last 5 chat lines from prior hands (current-hand chat is already in THIS HAND).
+          // Use startsWith to avoid [H5] accidentally matching [H50], [H500], etc.
+          const currentHandPrefix = `[H${this.currentHandNumber}] `;
+          const previousHandChatLines = this.chatHistory
+            .filter(e => !e.startsWith(currentHandPrefix))
+            .slice(-5);
 
           const prompt = buildDecisionPrompt(
             output.summary,
@@ -380,6 +413,7 @@ export class GameSession {
             sessionInsights,
             notes,
             handNotes,
+            previousHandChatLines,
           );
           this.debug('YOUR_TURN', {
             hand: this.currentHandNumber,
@@ -388,6 +422,7 @@ export class GameSession {
             hasNotes: !!notes,
             hasHandNotes: !!handNotes,
             hasInsights: !!sessionInsights,
+            previousHandChatCount: previousHandChatLines.length,
           });
           this.debug('DECISION_PROMPT', { hand: this.currentHandNumber, prompt });
           this.sendDecision(prompt, context);
@@ -443,6 +478,9 @@ export class GameSession {
       let updateReason: string | null = null;
       let highPriority = false;
 
+      // Reset short-stack flag when stack recovers above threshold
+      if (stackAfter >= bb * 15) this.shortStackNotified = false;
+
       if (stackAfter >= this.stackBeforeHand * 2) {
         updateReason = `Doubled up! ${msg} (${this.stackBeforeHand} → ${stackAfter})`;
         highPriority = true;
@@ -450,9 +488,10 @@ export class GameSession {
         const direction = stackAfter > this.stackBeforeHand ? 'Won big' : 'Lost big';
         updateReason = `${direction}! ${msg} (${this.stackBeforeHand} → ${stackAfter})`;
         highPriority = true;
-      } else if (stackAfter > 0 && stackAfter < bb * 15) {
+      } else if (stackAfter > 0 && stackAfter < bb * 15 && !this.shortStackNotified) {
+        // Fire once on entering short-stack territory; stays silent while condition persists
         updateReason = `Short-stacked (${stackAfter} chips, ${Math.floor(stackAfter / bb)} BB). ${msg}`;
-        highPriority = true;
+        this.shortStackNotified = true;
       } else if (changeBBs >= 5 && stackAfter > this.stackBeforeHand) {
         updateReason = `Nice pot! ${msg} (${this.stackBeforeHand} → ${stackAfter}, +${Math.round(changeBBs)} BB)`;
       }

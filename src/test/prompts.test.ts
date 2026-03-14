@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   buildReflectionPrompt,
+  buildDecisionPrompt,
   formatOpponentStats,
   formatRecentHand,
   controlSignals,
@@ -278,16 +279,6 @@ describe('buildReflectionPrompt', () => {
 // ── buildDecisionPrompt — chat instruction ──────────────────────────
 
 describe('buildDecisionPrompt — chat instruction', () => {
-  // Import inline to avoid polluting other tests with top-level import
-  let buildDecisionPrompt: typeof import('../prompts.js')['buildDecisionPrompt'];
-  let buildSummary: typeof import('../prompts.js')['buildSummary'];
-
-  beforeAll(async () => {
-    const mod = await import('../prompts.js');
-    buildDecisionPrompt = mod.buildDecisionPrompt;
-    buildSummary = mod.buildSummary;
-  });
-
   it('includes chat field in response schema', () => {
     const prompt = buildDecisionPrompt('PREFLOP | As Kh', '', [], [], [], '');
     expect(prompt).toContain('"chat"');
@@ -301,11 +292,45 @@ describe('buildDecisionPrompt — chat instruction', () => {
   });
 });
 
+// ── buildDecisionPrompt — previousHandChat ──────────────────────────
+
+describe('buildDecisionPrompt — RECENT CHAT section', () => {
+  it('renders RECENT CHAT section when previousHandChat is non-empty', () => {
+    const chat = ['[H18] Alice: nice bluff', '[H19] Bob: gg'];
+    const prompt = buildDecisionPrompt('PREFLOP | As Kh', '', [], [], [], '', '', '', chat);
+    expect(prompt).toContain('═══ RECENT CHAT ═══');
+    expect(prompt).toContain('[H18] Alice: nice bluff');
+    expect(prompt).toContain('[H19] Bob: gg');
+  });
+
+  it('omits RECENT CHAT section when previousHandChat is empty', () => {
+    const prompt = buildDecisionPrompt('PREFLOP | As Kh', '', [], [], [], '', '', '', []);
+    expect(prompt).not.toContain('═══ RECENT CHAT ═══');
+  });
+
+  it('omits RECENT CHAT section when previousHandChat uses default', () => {
+    const prompt = buildDecisionPrompt('PREFLOP | As Kh', '', [], [], [], '');
+    expect(prompt).not.toContain('═══ RECENT CHAT ═══');
+  });
+
+  it('RECENT CHAT appears after THIS HAND and before OPPONENT PROFILE', () => {
+    const chat = ['[H5] Alice: wp'];
+    const opponentStats = ['Alice (10 hands): VPIP 40%\n→ Loose-passive'];
+    const handEvents = ['Alice raised 40'];
+    const prompt = buildDecisionPrompt('PREFLOP | As Kh', '', handEvents, [], opponentStats, '', '', '', chat);
+    const chatPos = prompt.indexOf('═══ RECENT CHAT ═══');
+    const handPos = prompt.indexOf('═══ THIS HAND ═══');
+    const oppPos = prompt.indexOf('═══ OPPONENT PROFILE ═══');
+    expect(handPos).toBeLessThan(chatPos);
+    expect(chatPos).toBeLessThan(oppPos);
+  });
+});
+
 // ── buildReflectionPrompt — recentChatLines ─────────────────────────
 
 describe('buildReflectionPrompt — table talk section', () => {
   it('includes TABLE TALK section when recentChatLines provided', () => {
-    const result = buildReflectionPrompt([], [], 'Some insights', ['💬 Alice: Nice hand!', '💬 Bob: GG']);
+    const result = buildReflectionPrompt([], [], 'Some insights', ['Alice: Nice hand!', 'Bob: GG']);
     expect(result).toContain('TABLE TALK');
     expect(result).toContain('Alice: Nice hand!');
     expect(result).toContain('Bob: GG');
@@ -322,8 +347,17 @@ describe('buildReflectionPrompt — table talk section', () => {
   });
 
   it('includes social reads mention in reflection instruction', () => {
-    const result = buildReflectionPrompt([], [], 'insights', ['💬 Alice: bluff!']);
+    const result = buildReflectionPrompt([], [], 'insights', ['Alice: bluff!']);
     expect(result).toContain('social reads from table talk');
+  });
+
+  it('preserves [H${N}] hand labels in TABLE TALK section', () => {
+    const result = buildReflectionPrompt([], [], 'insights', [
+      '[H21] Alice: nice hand',
+      '[H22] Bob: thanks',
+    ]);
+    expect(result).toContain('[H21] Alice: nice hand');
+    expect(result).toContain('[H22] Bob: thanks');
   });
 });
 

@@ -910,6 +910,84 @@ describe('GameSession — processHandResult (via handleOutputs)', () => {
     expect(session.lastHandUpdateTime).toBeGreaterThan(0);
   });
 
+  it('fires short-stack signal only once while persistently short-stacked', () => {
+    const { session, notifyCalls } = makeSession();
+    const context = makeContext();
+    const bb = 20;
+    // stackBeforeHand must be close to stackAfter so changeRatio ≤ 0.3 —
+    // otherwise the "Lost big!" branch fires first and short-stack is never reached.
+    const shortView = makeView({
+      yourChips: 200, // 10 BB, below 15 BB threshold (bb * 15 = 300)
+      yourSeat: 0,
+      lastHandResult: {
+        winners: [1],
+        players: [
+          { userId: 'user-hero', seat: 0, name: 'Hero', chips: 200 },
+          { userId: 'user-alice', seat: 1, name: 'Alice', chips: 1800 },
+        ],
+        potResults: [{ winners: [1], amount: 20 }],
+      },
+      forcedBets: { smallBlind: 10, bigBlind: bb, ante: 0 },
+    });
+
+    // First hand: change = 220→200 = -20 chips = -1 BB (changeRatio ≈ 9%, below 30% threshold)
+    session.stackBeforeHand = 220;
+    session.currentHandNumber = 5;
+    session.handleOutputs([{ type: 'HAND_RESULT', state: shortView, handNumber: 5 }], shortView, [], context);
+    const callsAfterFirst = notifyCalls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+    expect(session.shortStackNotified).toBe(true);
+    expect(notifyCalls.some(c => c.includes('Short-stacked'))).toBe(true);
+
+    // Second hand still below threshold — signal suppressed
+    session.stackBeforeHand = 200;
+    session.currentHandNumber = 6;
+    session.handleOutputs([{ type: 'HAND_RESULT', state: shortView, handNumber: 6 }], shortView, [], context);
+    expect(notifyCalls.length).toBe(callsAfterFirst);
+  });
+
+  it('resets shortStackNotified when stack recovers above 15BB and re-fires on next dip', () => {
+    const { session, notifyCalls } = makeSession();
+    const context = makeContext();
+    const bb = 20;
+
+    // Helper: make a view with given chips, small change from prev (avoids "lost/won big" branch)
+    const makeSmallChangeView = (chips: number) => makeView({
+      yourChips: chips,
+      yourSeat: 0,
+      lastHandResult: {
+        winners: [1],
+        players: [
+          { userId: 'user-hero', seat: 0, name: 'Hero', chips },
+          { userId: 'user-alice', seat: 1, name: 'Alice', chips: 2000 - chips },
+        ],
+        potResults: [{ winners: [1], amount: 20 }],
+      },
+      forcedBets: { smallBlind: 10, bigBlind: bb, ante: 0 },
+    });
+
+    // Enter short-stack: 220 → 200 (changeRatio ≈ 9%, below 30% — short-stack fires)
+    session.stackBeforeHand = 220;
+    session.currentHandNumber = 5;
+    session.handleOutputs([{ type: 'HAND_RESULT', state: makeSmallChangeView(200), handNumber: 5 }], makeSmallChangeView(200), [], context);
+    expect(session.shortStackNotified).toBe(true);
+    const callsAfterShort = notifyCalls.length;
+
+    // Recover above 15BB (bb * 15 = 300): 200 → 320 (changeRatio ≈ 60% → "Won big!" fires + resets flag)
+    session.stackBeforeHand = 200;
+    session.currentHandNumber = 6;
+    session.handleOutputs([{ type: 'HAND_RESULT', state: makeSmallChangeView(320), handNumber: 6 }], makeSmallChangeView(320), [], context);
+    expect(session.shortStackNotified).toBe(false); // reset since stackAfter ≥ bb * 15
+
+    // Dip back below 15BB: 320 → 200 (changeRatio ≈ 37% → "Lost big!" + shortStackNotified already false, but short-stack else-if not reached)
+    // Use a small change so short-stack else-if is reached: 220 → 200
+    session.stackBeforeHand = 220;
+    session.currentHandNumber = 7;
+    session.handleOutputs([{ type: 'HAND_RESULT', state: makeSmallChangeView(200), handNumber: 7 }], makeSmallChangeView(200), [], context);
+    expect(session.shortStackNotified).toBe(true);
+    expect(notifyCalls.length).toBeGreaterThan(callsAfterShort);
+  });
+
   it('detects opponent bust', () => {
     const { session } = makeSession();
     const context = makeContext();
@@ -1104,6 +1182,37 @@ describe('GameSession — reflection concurrent guard', () => {
     session.handleStateEvent(makeView({ handNumber: 3, recentHands: [] }), context, () => {});
     // The warmup call fires on first connect, then reflection on hand 2 — but NOT on hand 3
     expect(callCount).toBe(callsAfterFirst);
+  });
+});
+
+// ── chatSinceReflection lifecycle ───────────────────────────────────
+
+describe('GameSession — chatSinceReflection cleared after successful reflection', () => {
+  it('clears chatSinceReflection after a successful reflection write', async () => {
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async () => ({
+      payloads: [{ text: '{"insights": "tight players, play carefully"}' }],
+    });
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+      reflectEveryNHands: 1,
+    });
+
+    // Pre-populate the buffer
+    session.chatSinceReflection = ['[H1] Alice: nice hand', '[H1] Bob: gg'];
+    expect(session.chatSinceReflection).toHaveLength(2);
+
+    const context = makeContext();
+    // Hand 1 — first hand, no reflection triggered
+    session.handleStateEvent(makeView({ handNumber: 1, recentHands: [] }), context, () => {});
+    // Hand 2 — triggers reflection (reflectEveryNHands=1, hand change)
+    session.handleStateEvent(makeView({ handNumber: 2, recentHands: [] }), context, () => {});
+
+    // Wait for the async reflection .then() chain to settle
+    await vi.waitFor(() => {
+      expect(session.chatSinceReflection).toHaveLength(0);
+    }, { timeout: 2000 });
   });
 });
 
@@ -1325,8 +1434,11 @@ describe('GameSession — table chat extraction from transitions', () => {
 
     session.handleStateEvent({ ...view, transitions }, context, () => {});
 
-    expect(session.currentHandEvents).toContain('💬 Alice: Nice hand!');
-    expect(session.recentEvents).toContain('💬 Alice: Nice hand!');
+    // Chat lines use [H${N}] hand label format (no emoji prefix)
+    expect(session.currentHandEvents).toContain('[H1] Alice: Nice hand!');
+    expect(session.recentEvents).toContain('[H1] Alice: Nice hand!');
+    expect(session.chatHistory).toContain('[H1] Alice: Nice hand!');
+    expect(session.chatSinceReflection).toContain('[H1] Alice: Nice hand!');
   });
 
   it('skips table-chat transitions from own seat', () => {
@@ -1360,7 +1472,7 @@ describe('GameSession — table chat extraction from transitions', () => {
 
     session.handleStateEvent({ ...view, transitions }, context, () => {});
 
-    expect(session.currentHandEvents.filter(e => e.startsWith('💬'))).toHaveLength(2);
+    expect(session.currentHandEvents.filter(e => /^\[H\d+\]/.test(e))).toHaveLength(2);
     expect(session.currentHandEvents.some(e => e.includes('Alice'))).toBe(true);
     expect(session.currentHandEvents.some(e => e.includes('Bob'))).toBe(true);
   });
@@ -1652,5 +1764,49 @@ describe('GameSession — DRAMA_MOMENT reactive chat', () => {
 
     await session.lastDecision;
     expect(session.decisionInFlight).toBe(false);
+  });
+});
+
+// ── firstHandNumber mid-game join filter ─────────────────────────────
+
+describe('GameSession — firstHandNumber filters pre-join hands from decision prompt', () => {
+  it('excludes pre-join recentHands from the decision prompt', async () => {
+    let capturedPrompt = '';
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async (...args: unknown[]) => {
+      // callAgent receives { agentId, sessionKey, message: prompt, ... }
+      const params = args[0] as Record<string, unknown>;
+      if (params?.message) capturedPrompt = params.message as string;
+      return { payloads: [{ text: '{"action":"fold","narration":"fold"}' }] };
+    };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    const context = makeContext();
+
+    // First state event at hand 10 — sets firstHandNumber = 10
+    session.handleStateEvent(makeView({ handNumber: 10 }), context, () => {});
+
+    // YOUR_TURN output includes hands 8 and 9 (pre-join) and 10 (first owned hand)
+    const recentHands = [
+      { handNumber: 8, boardCards: [], result: { winners: [], potSize: 100, showdownHands: [] }, yourOutcome: null },
+      { handNumber: 9, boardCards: [], result: { winners: [], potSize: 100, showdownHands: [] }, yourOutcome: null },
+      { handNumber: 10, boardCards: [], result: { winners: [], potSize: 200, showdownHands: [] }, yourOutcome: null },
+    ];
+
+    session.currentHandNumber = 10;
+    const view = makeView({ handNumber: 10, gameId: 'game-1' });
+    session.handleOutputs(
+      [{ type: 'YOUR_TURN', state: { ...view, recentHands }, summary: 'PREFLOP | As Kh', handNumber: 10 }],
+      view, [], context,
+    );
+    await session.lastDecision;
+
+    // Pre-join hands must not appear in the prompt
+    expect(capturedPrompt).not.toContain('#8:');
+    expect(capturedPrompt).not.toContain('#9:');
+    // Hand 10 should appear (the only eligible hand)
+    expect(capturedPrompt).toContain('#10:');
   });
 });
