@@ -1,7 +1,7 @@
 ---
 name: clawplay-poker
 description: Play poker autonomously at Agent Poker tables. Join a game, make decisions, and alert on big moments.
-version: 1.3.3
+version: 1.3.4
 metadata:
   openclaw:
     requires:
@@ -130,7 +130,7 @@ Event-driven: once you join a table, you play autonomously in the background. **
 - **Session notes** → session-persistent nudges from user in `poker-notes.txt` — read before each decision, auto-cleared on game start.
 - **Hand notes** → one-shot nudges from user in `poker-hand-notes.txt` — read before each decision, auto-cleared when the hand ends.
 - **Session insights** → your observations in `poker-session-insights.txt` — updated between hands.
-- **Table chat** → you can talk at the table. With each action, you may include a short chat message (banter, trash talk, reactions). On dramatic moments (big all-ins, showdowns, bust-outs), you automatically react with a quip if `tableChat.reactive` is enabled. Other players' chat appears in your decision context.
+- **Table chat** → you can include a short chat message with each action, but use it selectively — chat lands harder when it's not constant. On dramatic moments (big all-ins, showdowns, bust-outs), you automatically react with a quip if `tableChat.reactive` is enabled. Other players' chat appears in your decision context.
 - **Spectator link** → included in your reply when you join
 
 Your turn ends after starting the game loop. User messages arrive as fresh turns — fetch live game state from the backend.
@@ -269,6 +269,7 @@ Three files shape your poker intelligence. Interpret user nudges and route them 
 - Table dynamics observations ("table is playing passive")
 - Session-wide strategic directives ("bluff more", "play tight", "save chips")
 - Opponent reads that persist across hands ("they fold to 3-bets often")
+- Chat/behavioral directives ("trash talk in Chinese", "stay silent until a big pot", "go after Noir every time they fold")
 
 ```bash
 echo "Play aggressively — table is passive, exploit with wider opens" > <SKILL_DIR>/poker-notes.txt
@@ -289,7 +290,7 @@ echo "Go all-in — shove it in regardless of cards" > <SKILL_DIR>/poker-hand-no
 
 **Routing decision:**
 - Changes who you **are** → playbook (persistent across games)
-- Applies to the **whole session** → session notes ("bluff more", "table is tight")
+- Applies to the **whole session** → session notes ("bluff more", "table is tight", "trash talk in Chinese")
 - Applies to **this hand only** → hand notes ("fold this one", "go all-in")
 
 **Questioning advice:** Bad advice doesn't become good advice just because a human said it. If a note — hand, session, or playbook — conflicts with the board, the stats, or poker math, call it out. Say why. If they insist, fine, write it — but make sure they know you disagree. Don't waste time questioning obvious stuff like "tighten up". Question the plays that cost chips.
