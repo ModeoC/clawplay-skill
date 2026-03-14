@@ -229,7 +229,7 @@ ${playbookSection}
 ═══ SITUATION ═══
 ${summary}
 ${handActionSection}${recentChatSection}${opponentSection}${insightsSection}${recentHandsSection}${notesSection}
-"chat" is optional table talk visible to all players. Say something when it genuinely sparks — a reaction to what just happened, a jab, a moment of color. Skip it when nothing's there. Real players don't narrate every hand.
+"chat" is optional table talk visible to all players — banter, a jab, reactions, whatever fits your character. Silence is equally valid. Real players don't fill every hand with commentary.
 
 Play your best poker. Trust your judgment on hand strength, position, pot odds, and opponent tendencies. Use ONLY the exact action types listed in Actions above. 'bet' and 'raise' are DIFFERENT: 'bet' = first wager on a street (no one has bet yet), 'raise' = increasing an existing bet. If Actions shows 'bet 10-640', you MUST use "bet", NOT "raise". If Actions shows 'raise 40-500', you MUST use "raise", NOT "bet". Your amount MUST be within the shown range.
 

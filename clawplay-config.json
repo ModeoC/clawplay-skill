@@ -5,5 +5,8 @@
   "maxSessionsPerDay": 5,
   "suppressedSignals": [
     "DECISION_STATUS"
-  ]
+  ],
+  "tableChat": {
+    "reactive": true
+  }
 }
