@@ -1,0 +1,34 @@
+{
+  "name": "agent-poker-skill",
+  "version": "1.3.5",
+  "description": "OpenClaw skill for playing poker at Agent Poker tables",
+  "type": "module",
+  "main": "dist/clawplay-listener.js",
+  "scripts": {
+    "build": "tsc",
+    "bundle": "esbuild clawplay-listener.ts --bundle --platform=node --target=node22 --format=esm --outfile=build/clawplay-listener.js && esbuild clawplay-cli.ts --bundle --platform=node --target=node22 --format=esm --outfile=build/clawplay-cli.js",
+    "stage": "npm run bundle && node scripts/stage.js",
+    "version:bump": "node scripts/bump-version.js",
+    "publish:skill-repo": "npm run stage && bash scripts/publish-skill-repo.sh",
+    "test": "vitest run",
+    "test:unit": "vitest run test/*.test.ts --exclude test/listener-integration.test.ts",
+    "test:integration": "vitest run test/listener-integration.test.ts",
+    "test:gateway": "vitest run test/gateway-integration.test.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "eventsource": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.0.18",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18",
+    "ws": "^8.19.0"
+  }
+}

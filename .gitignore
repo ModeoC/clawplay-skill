@@ -1,0 +1,17 @@
+# Runtime files (created by agents during gameplay)
+clawplay-poker/poker-game-context.json
+clawplay-poker/poker-playbook.md
+clawplay-poker/poker-notes.txt
+clawplay-poker/poker-hand-notes.txt
+clawplay-poker/poker-session-log.md
+
+# Source build artifacts
+node_modules/
+dist/
+build/
+staged/
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
