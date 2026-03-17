@@ -1896,6 +1896,23 @@ function debug(label, data) {
   }
   debugStream.write(lines.join("\n") + "\n\n");
 }
+var DEBUG_WORTHY_TYPES = /* @__PURE__ */ new Set([
+  "FATAL_EXIT",
+  "HEARTBEAT_TIMEOUT",
+  "SSE_RECONNECT_ATTEMPT",
+  "SSE_RECONNECTED",
+  "CRASH",
+  "SIGNAL_EXIT",
+  "HEALTH_CHECK",
+  "CONNECTION_ERROR",
+  "GAME_STARTED",
+  "GAME_ENDED",
+  "VERSION_STALE",
+  "MODE",
+  "DELIVERY_MODE",
+  "KILLING_STALE_LISTENER",
+  "GW_CONNECT_FAILED"
+]);
 var lockFilePath = null;
 async function acquirePidLock(lockFile, emitFn) {
   try {
@@ -1992,9 +2009,11 @@ function runUnifiedMode(config) {
     let inGame = false;
     let es;
     const HEARTBEAT_TIMEOUT_MS = 9e4;
-    const MAX_RECONNECT_ATTEMPTS = 3;
-    const RECONNECT_DELAY_MS = 3e3;
+    const RECONNECT_BASE_DELAY_MS = 3e3;
+    const RECONNECT_MAX_DELAY_MS = 6e4;
+    const RECONNECT_GIVE_UP_MS = 30 * 6e4;
     const startTime = Date.now();
+    let reconnectingSince = null;
     const healthCheck = setInterval(() => {
       const mem = process.memoryUsage();
       emit({
@@ -2016,13 +2035,15 @@ function runUnifiedMode(config) {
         heartbeatCheckRunning = true;
         try {
           emit({ type: "HEARTBEAT_TIMEOUT", lastEventAge: Date.now() - session.lastEventTime });
-          if (session.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            fatalExit("Connection lost after reconnect attempts");
+          if (reconnectingSince === null) reconnectingSince = Date.now();
+          if (Date.now() - reconnectingSince > RECONNECT_GIVE_UP_MS) {
+            fatalExit(`Connection lost after ${Math.round((Date.now() - reconnectingSince) / 6e4)}min of reconnecting`);
           } else {
             session.reconnectAttempts++;
-            emit({ type: "SSE_RECONNECT_ATTEMPT", attempt: session.reconnectAttempts });
+            const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (session.reconnectAttempts - 1), RECONNECT_MAX_DELAY_MS);
+            emit({ type: "SSE_RECONNECT_ATTEMPT", attempt: session.reconnectAttempts, delayMs: delay });
             es.close();
-            setTimeout(() => connectSSE(), RECONNECT_DELAY_MS * 2 ** (session.reconnectAttempts - 1));
+            setTimeout(() => connectSSE(), delay);
           }
         } finally {
           heartbeatCheckRunning = false;
@@ -2086,6 +2107,10 @@ function runUnifiedMode(config) {
         session.lastEventTime = Date.now();
         session.lastStateEventTime = Date.now();
         session.reconnectAttempts = 0;
+        if (reconnectingSince !== null) {
+          emit({ type: "SSE_RECONNECTED", downtime: Math.round((Date.now() - reconnectingSince) / 1e3) });
+          reconnectingSince = null;
+        }
         try {
           const data = JSON.parse(event.data);
           if (!inGame) {
@@ -2151,6 +2176,10 @@ function runUnifiedMode(config) {
       es.addEventListener("keepalive", () => {
         session.lastEventTime = Date.now();
         session.reconnectAttempts = 0;
+        if (reconnectingSince !== null) {
+          emit({ type: "SSE_RECONNECTED", downtime: Math.round((Date.now() - reconnectingSince) / 1e3) });
+          reconnectingSince = null;
+        }
       });
       es.onerror = (err) => {
         const msg = "message" in err ? err.message : "unknown";
@@ -2183,8 +2212,10 @@ function runGameMode(config) {
     const context = { prevState: null, prevPhase: null, lastActionType: null, lastReportedHand: 0, lastTurnKey: null };
     let es;
     const HEARTBEAT_TIMEOUT_MS = 9e4;
-    const MAX_RECONNECT_ATTEMPTS = 3;
-    const RECONNECT_DELAY_MS = 3e3;
+    const RECONNECT_BASE_DELAY_MS = 3e3;
+    const RECONNECT_MAX_DELAY_MS = 6e4;
+    const RECONNECT_GIVE_UP_MS = 30 * 6e4;
+    let reconnectingSince = null;
     let heartbeatCheckRunning = false;
     const heartbeatCheck = setInterval(async () => {
       if (heartbeatCheckRunning) return;
@@ -2204,13 +2235,15 @@ function runGameMode(config) {
             }
           } catch {
           }
-          if (session.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            gracefulExit("Connection lost after reconnect attempts", 1);
+          if (reconnectingSince === null) reconnectingSince = Date.now();
+          if (Date.now() - reconnectingSince > RECONNECT_GIVE_UP_MS) {
+            gracefulExit(`Connection lost after ${Math.round((Date.now() - reconnectingSince) / 6e4)}min of reconnecting`, 1);
           } else {
             session.reconnectAttempts++;
-            emit({ type: "SSE_RECONNECT_ATTEMPT", attempt: session.reconnectAttempts });
+            const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (session.reconnectAttempts - 1), RECONNECT_MAX_DELAY_MS);
+            emit({ type: "SSE_RECONNECT_ATTEMPT", attempt: session.reconnectAttempts, delayMs: delay });
             es.close();
-            setTimeout(() => connectSSE(), RECONNECT_DELAY_MS * 2 ** (session.reconnectAttempts - 1));
+            setTimeout(() => connectSSE(), delay);
           }
         } finally {
           heartbeatCheckRunning = false;
@@ -2293,6 +2326,10 @@ function runGameMode(config) {
       es.addEventListener("keepalive", () => {
         session.lastEventTime = Date.now();
         session.reconnectAttempts = 0;
+        if (reconnectingSince !== null) {
+          emit({ type: "SSE_RECONNECTED", downtime: Math.round((Date.now() - reconnectingSince) / 1e3) });
+          reconnectingSince = null;
+        }
       });
       es.addEventListener("closed", () => {
         session.lastEventTime = Date.now();
@@ -2425,6 +2462,8 @@ ${content}`;
 }
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
+  const t = obj.type;
+  if (t && DEBUG_WORTHY_TYPES.has(t)) debug(t, obj);
 }
 var isDirectRun = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/.*\//, ""));
 if (isDirectRun) {

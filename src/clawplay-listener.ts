@@ -34,6 +34,15 @@ function debug(label: string, data: Record<string, unknown>): void {
   debugStream.write(lines.join('\n') + '\n\n');
 }
 
+// Event types worth capturing in the debug log for post-mortem analysis.
+// High-frequency events (keepalives, lobby events) are excluded to reduce noise.
+const DEBUG_WORTHY_TYPES = new Set([
+  'FATAL_EXIT', 'HEARTBEAT_TIMEOUT', 'SSE_RECONNECT_ATTEMPT', 'SSE_RECONNECTED',
+  'CRASH', 'SIGNAL_EXIT', 'HEALTH_CHECK', 'CONNECTION_ERROR',
+  'GAME_STARTED', 'GAME_ENDED', 'VERSION_STALE', 'MODE', 'DELIVERY_MODE',
+  'KILLING_STALE_LISTENER', 'GW_CONNECT_FAILED',
+]);
+
 // ── PID lock ─────────────────────────────────────────────────────────
 
 let lockFilePath: string | null = null;
@@ -178,9 +187,11 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
     let inGame = false;
     let es: EventSource;
     const HEARTBEAT_TIMEOUT_MS = 90_000;
-    const MAX_RECONNECT_ATTEMPTS = 3;
-    const RECONNECT_DELAY_MS = 3_000;
+    const RECONNECT_BASE_DELAY_MS = 3_000;
+    const RECONNECT_MAX_DELAY_MS = 60_000;     // Cap at 1 min between attempts
+    const RECONNECT_GIVE_UP_MS = 30 * 60_000;  // 30 min continuous failure → exit
     const startTime = Date.now();
+    let reconnectingSince: number | null = null;
 
     // Periodic health check — captures memory, connection state, and activity
     // so long-running idle periods can be diagnosed after the fact.
@@ -207,13 +218,16 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
         try {
           emit({ type: 'HEARTBEAT_TIMEOUT', lastEventAge: Date.now() - session.lastEventTime });
 
-          if (session.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            fatalExit('Connection lost after reconnect attempts');
+          if (reconnectingSince === null) reconnectingSince = Date.now();
+
+          if (Date.now() - reconnectingSince > RECONNECT_GIVE_UP_MS) {
+            fatalExit(`Connection lost after ${Math.round((Date.now() - reconnectingSince) / 60_000)}min of reconnecting`);
           } else {
             session.reconnectAttempts++;
-            emit({ type: 'SSE_RECONNECT_ATTEMPT', attempt: session.reconnectAttempts });
+            const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (session.reconnectAttempts - 1), RECONNECT_MAX_DELAY_MS);
+            emit({ type: 'SSE_RECONNECT_ATTEMPT', attempt: session.reconnectAttempts, delayMs: delay });
             es.close();
-            setTimeout(() => connectSSE(), RECONNECT_DELAY_MS * 2 ** (session.reconnectAttempts - 1));
+            setTimeout(() => connectSSE(), delay);
           }
         } finally {
           heartbeatCheckRunning = false;
@@ -302,6 +316,10 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
         session.lastEventTime = Date.now();
         session.lastStateEventTime = Date.now();
         session.reconnectAttempts = 0;
+        if (reconnectingSince !== null) {
+          emit({ type: 'SSE_RECONNECTED', downtime: Math.round((Date.now() - reconnectingSince) / 1000) });
+          reconnectingSince = null;
+        }
         try {
           const data = JSON.parse(event.data);
           if (!inGame) {
@@ -372,6 +390,10 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
       es.addEventListener('keepalive', () => {
         session.lastEventTime = Date.now();
         session.reconnectAttempts = 0;
+        if (reconnectingSince !== null) {
+          emit({ type: 'SSE_RECONNECTED', downtime: Math.round((Date.now() - reconnectingSince) / 1000) });
+          reconnectingSince = null;
+        }
       });
 
       es.onerror = (err: Event) => {
@@ -501,8 +523,10 @@ function runGameMode(config: GameModeConfig): Promise<void> {
     const context: ListenerContext = { prevState: null, prevPhase: null, lastActionType: null, lastReportedHand: 0, lastTurnKey: null };
     let es: EventSource;
     const HEARTBEAT_TIMEOUT_MS = 90_000;
-    const MAX_RECONNECT_ATTEMPTS = 3;
-    const RECONNECT_DELAY_MS = 3_000;
+    const RECONNECT_BASE_DELAY_MS = 3_000;
+    const RECONNECT_MAX_DELAY_MS = 60_000;     // Cap at 1 min between attempts
+    const RECONNECT_GIVE_UP_MS = 30 * 60_000;  // 30 min continuous failure → exit
+    let reconnectingSince: number | null = null;
 
     let heartbeatCheckRunning = false;
     const heartbeatCheck = setInterval(async () => {
@@ -524,13 +548,16 @@ function runGameMode(config: GameModeConfig): Promise<void> {
             }
           } catch {}
 
-          if (session.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            gracefulExit('Connection lost after reconnect attempts', 1);
+          if (reconnectingSince === null) reconnectingSince = Date.now();
+
+          if (Date.now() - reconnectingSince > RECONNECT_GIVE_UP_MS) {
+            gracefulExit(`Connection lost after ${Math.round((Date.now() - reconnectingSince) / 60_000)}min of reconnecting`, 1);
           } else {
             session.reconnectAttempts++;
-            emit({ type: 'SSE_RECONNECT_ATTEMPT', attempt: session.reconnectAttempts });
+            const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (session.reconnectAttempts - 1), RECONNECT_MAX_DELAY_MS);
+            emit({ type: 'SSE_RECONNECT_ATTEMPT', attempt: session.reconnectAttempts, delayMs: delay });
             es.close();
-            setTimeout(() => connectSSE(), RECONNECT_DELAY_MS * 2 ** (session.reconnectAttempts - 1));
+            setTimeout(() => connectSSE(), delay);
           }
         } finally {
           heartbeatCheckRunning = false;
@@ -624,6 +651,10 @@ function runGameMode(config: GameModeConfig): Promise<void> {
       es.addEventListener('keepalive', () => {
         session.lastEventTime = Date.now();
         session.reconnectAttempts = 0;
+        if (reconnectingSince !== null) {
+          emit({ type: 'SSE_RECONNECTED', downtime: Math.round((Date.now() - reconnectingSince) / 1000) });
+          reconnectingSince = null;
+        }
       });
 
       es.addEventListener('closed', () => {
@@ -784,6 +815,8 @@ async function main(): Promise<void> {
 
 function emit(obj: Record<string, unknown> | ListenerOutput): void {
   process.stdout.write(JSON.stringify(obj) + '\n');
+  const t = (obj as Record<string, unknown>).type as string | undefined;
+  if (t && DEBUG_WORTHY_TYPES.has(t)) debug(t, obj as Record<string, unknown>);
 }
 
 const isDirectRun =
