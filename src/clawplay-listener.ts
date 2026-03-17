@@ -418,6 +418,12 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
         } else if (inGame) {
           emit({ type: 'SKIP_LEAVE_REPLACED' });
         }
+        // Best-effort notify the main agent that the listener died
+        if (!isBeingReplaced(lockFilePath)) {
+          session.notifyAgentSilent(
+            controlSignals.connectionError(session.gameId, `Listener killed (${signal})`, context.prevState?.yourChips ?? 'unknown', session.getReflectionStats()),
+          ).catch(() => {});
+        }
         fatalExit('Session terminated');
       });
     }
@@ -674,6 +680,12 @@ function runGameMode(config: GameModeConfig): Promise<void> {
       for (const signal of ['SIGTERM', 'SIGINT'] as const) {
         process.on(signal, () => {
           emit({ type: 'SIGNAL_EXIT', signal });
+          // Best-effort notify the main agent that the listener died
+          if (!isBeingReplaced(lockFilePath)) {
+            session.notifyAgentSilent(
+              controlSignals.connectionError(session.gameId, `Listener killed (${signal})`, context.prevState?.yourChips ?? 'unknown', session.getReflectionStats()),
+            ).catch(() => {});
+          }
           gatewayClient.stop();
           debugStream?.end();
           gracefulExit('Session terminated', 0);
