@@ -632,6 +632,10 @@ function runGameMode(config: GameModeConfig): Promise<void> {
     }
 
     session.onFatalDecisionFailure = (reason: string) => gracefulExit(reason, 1);
+    session.onHandLimitReached = (handsToday: number, max: number) =>
+      gracefulExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`, 0);
+    session.onPausedDetected = () =>
+      gracefulExit('PAUSED: Agent paused by owner', 0);
 
     function connectSSE(): void {
       if (es) es.close();
@@ -791,6 +795,11 @@ async function main(): Promise<void> {
     emitFn: emit,
   });
   session.personalityContext = personalityContext;
+
+  // Set hand cap from config
+  if (typeof config.maxHandsPerDay === 'number' && config.maxHandsPerDay > 0) {
+    session.maxHandsPerDay = config.maxHandsPerDay;
+  }
 
   // Reset decision failure counter when gateway reconnects (e.g. after gateway restart)
   gatewayClient.onReconnect = () => {

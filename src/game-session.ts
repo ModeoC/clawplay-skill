@@ -19,7 +19,7 @@ import {
   WARMUP_MESSAGE,
 } from './prompts.js';
 import { processStateEvent } from './state-processor.js';
-import { readPlaybook, readNotes, SKILL_ROOT } from './review.js';
+import { readPlaybook, readNotes, readClawPlayConfig, SKILL_ROOT } from './review.js';
 import type {
   PlayerView,
   PlayerInfo,
@@ -117,6 +117,15 @@ export class GameSession {
   stackBeforeHand: number | null = null;
   foldedInHand: number | null = null;
   shortStackNotified = false; // prevents repeated HAND_UPDATE signals while persistently short-stacked
+
+  // Hand cap tracking
+  handsPlayedThisSession = 0;
+  maxHandsPerDay: number | null = null; // set from config
+  handsAtSessionStart = 0; // baseline from heartbeat handsToday
+  /** Called when daily hand limit is reached; triggers leave + graceful exit. */
+  onHandLimitReached: ((handsToday: number, max: number) => void) | null = null;
+  /** Called when paused flag detected mid-game. */
+  onPausedDetected: (() => void) | null = null;
 
   // Personality context (loaded once at startup)
   personalityContext = '';
@@ -430,7 +439,10 @@ export class GameSession {
         }
 
         case 'HAND_RESULT':
+          this.handsPlayedThisSession++;
           this.processHandResult(view, output.handNumber || this.currentHandNumber, prevPlayers);
+          this.checkHandCap();
+          this.checkPaused();
           break;
 
         case 'WAITING_FOR_PLAYERS':
@@ -458,6 +470,27 @@ export class GameSession {
           this.emit(output);
       }
     }
+  }
+
+  // ── Hand cap + pause checks ─────────────────────────────────────
+
+  private checkHandCap(): void {
+    if (this.maxHandsPerDay == null) return;
+    const handsToday = this.handsAtSessionStart + this.handsPlayedThisSession;
+    if (handsToday >= this.maxHandsPerDay) {
+      this.emit({ type: 'HAND_LIMIT_REACHED', handsToday, maxHandsPerDay: this.maxHandsPerDay });
+      this.onHandLimitReached?.(handsToday, this.maxHandsPerDay);
+    }
+  }
+
+  private checkPaused(): void {
+    try {
+      const config = readClawPlayConfig();
+      if (config.paused) {
+        this.emit({ type: 'PAUSED_DETECTED' });
+        this.onPausedDetected?.();
+      }
+    } catch { /* ignore read errors */ }
   }
 
   // ── Hand result + big-event detection ───────────────────────────

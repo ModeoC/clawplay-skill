@@ -402,11 +402,11 @@ var init_dist2 = __esm({
 });
 
 // clawplay-listener.ts
-import { readFileSync as readFileSync4, writeFileSync as writeFileSync2, unlinkSync as unlinkSync2, createWriteStream } from "node:fs";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync3, unlinkSync as unlinkSync2, createWriteStream } from "node:fs";
 import { join as join4 } from "node:path";
 
 // review.ts
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 var __dirname = dirname(process.argv[1]);
 var SKILL_ROOT = __dirname.endsWith(sep + "dist") || __dirname.endsWith(sep + "build") ? join(__dirname, "..") : __dirname;
@@ -439,6 +439,9 @@ function readClawPlayConfig() {
       config.tableChat = {};
       if (typeof parsed.tableChat.reactive === "boolean") config.tableChat.reactive = parsed.tableChat.reactive;
     }
+    if (typeof parsed.paused === "boolean") config.paused = parsed.paused;
+    if (typeof parsed.maxSessionsPerDay === "number" && parsed.maxSessionsPerDay >= 0) config.maxSessionsPerDay = parsed.maxSessionsPerDay;
+    if (typeof parsed.maxHandsPerDay === "number" && parsed.maxHandsPerDay >= 0) config.maxHandsPerDay = parsed.maxHandsPerDay;
     if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === "object") {
       const la = parsed.lastLaunchArgs;
       if (typeof la.channel === "string" && typeof la.chatId === "string") {
@@ -976,7 +979,7 @@ var GatewayWsClient = class {
 
 // game-session.ts
 import { execFile } from "node:child_process";
-import { readFileSync as readFileSync3, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, unlinkSync } from "node:fs";
 import { join as join3 } from "node:path";
 
 // state-differ.ts
@@ -1207,7 +1210,7 @@ function readSessionInsights() {
 }
 function writeSessionInsights(insights) {
   try {
-    writeFileSync(INSIGHTS_FILE, insights + "\n");
+    writeFileSync2(INSIGHTS_FILE, insights + "\n");
   } catch {
   }
 }
@@ -1262,6 +1265,16 @@ var GameSession = class _GameSession {
   foldedInHand = null;
   shortStackNotified = false;
   // prevents repeated HAND_UPDATE signals while persistently short-stacked
+  // Hand cap tracking
+  handsPlayedThisSession = 0;
+  maxHandsPerDay = null;
+  // set from config
+  handsAtSessionStart = 0;
+  // baseline from heartbeat handsToday
+  /** Called when daily hand limit is reached; triggers leave + graceful exit. */
+  onHandLimitReached = null;
+  /** Called when paused flag detected mid-game. */
+  onPausedDetected = null;
   // Personality context (loaded once at startup)
   personalityContext = "";
   // Decision counter (total decisions attempted across all hands)
@@ -1527,7 +1540,10 @@ var GameSession = class _GameSession {
           break;
         }
         case "HAND_RESULT":
+          this.handsPlayedThisSession++;
           this.processHandResult(view, output.handNumber || this.currentHandNumber, prevPlayers);
+          this.checkHandCap();
+          this.checkPaused();
           break;
         case "WAITING_FOR_PLAYERS":
           this.notifyAgentSilent(controlSignals.waitingForPlayers(this.gameId));
@@ -1549,6 +1565,25 @@ var GameSession = class _GameSession {
         default:
           this.emit(output);
       }
+    }
+  }
+  // ── Hand cap + pause checks ─────────────────────────────────────
+  checkHandCap() {
+    if (this.maxHandsPerDay == null) return;
+    const handsToday = this.handsAtSessionStart + this.handsPlayedThisSession;
+    if (handsToday >= this.maxHandsPerDay) {
+      this.emit({ type: "HAND_LIMIT_REACHED", handsToday, maxHandsPerDay: this.maxHandsPerDay });
+      this.onHandLimitReached?.(handsToday, this.maxHandsPerDay);
+    }
+  }
+  checkPaused() {
+    try {
+      const config = readClawPlayConfig();
+      if (config.paused) {
+        this.emit({ type: "PAUSED_DETECTED" });
+        this.onPausedDetected?.();
+      }
+    } catch {
     }
   }
   // ── Hand result + big-event detection ───────────────────────────
@@ -1920,7 +1955,7 @@ async function acquirePidLock(lockFile, emitFn) {
     if (existingPid && existingPid !== process.pid) {
       try {
         process.kill(existingPid, 0);
-        writeFileSync2(lockFile, String(process.pid));
+        writeFileSync3(lockFile, String(process.pid));
         emitFn({ type: "KILLING_STALE_LISTENER", pid: existingPid });
         process.kill(existingPid, "SIGTERM");
         await new Promise((r) => setTimeout(r, 2e3));
@@ -1935,7 +1970,7 @@ async function acquirePidLock(lockFile, emitFn) {
     }
   } catch {
   }
-  writeFileSync2(lockFile, String(process.pid));
+  writeFileSync3(lockFile, String(process.pid));
 }
 function releasePidLock(lockFile) {
   try {
@@ -1985,7 +2020,7 @@ function persistLaunchArgs(configPath, channel, chatId, account) {
     const prev = cfg.lastLaunchArgs;
     if (!prev || prev.channel !== launchArgs.channel || prev.chatId !== launchArgs.chatId || prev.account !== launchArgs.account) {
       cfg.lastLaunchArgs = launchArgs;
-      writeFileSync2(configPath, JSON.stringify(cfg) + "\n");
+      writeFileSync3(configPath, JSON.stringify(cfg) + "\n");
     }
   } catch {
   }
@@ -2311,6 +2346,8 @@ function runGameMode(config) {
       forceExit.unref();
     }
     session.onFatalDecisionFailure = (reason) => gracefulExit(reason, 1);
+    session.onHandLimitReached = (handsToday, max) => gracefulExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`, 0);
+    session.onPausedDetected = () => gracefulExit("PAUSED: Agent paused by owner", 0);
     function connectSSE() {
       if (es) es.close();
       es = new EventSourceClass(sseUrl);
@@ -2447,6 +2484,9 @@ ${content}`;
     emitFn: emit
   });
   session.personalityContext = personalityContext;
+  if (typeof config.maxHandsPerDay === "number" && config.maxHandsPerDay > 0) {
+    session.maxHandsPerDay = config.maxHandsPerDay;
+  }
   gatewayClient.onReconnect = () => {
     session.resetDecisionFailures();
     emit({ type: "GW_RECONNECT_RESET_FAILURES" });
