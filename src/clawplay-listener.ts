@@ -41,6 +41,7 @@ const DEBUG_WORTHY_TYPES = new Set([
   'CRASH', 'SIGNAL_EXIT', 'HEALTH_CHECK', 'CONNECTION_ERROR',
   'GAME_STARTED', 'GAME_ENDED', 'VERSION_STALE', 'MODE', 'DELIVERY_MODE',
   'KILLING_STALE_LISTENER', 'GW_CONNECT_FAILED',
+  'SSE_OPEN', 'SSE_CONNECTED',
 ]);
 
 // ── PID lock ─────────────────────────────────────────────────────────
@@ -308,8 +309,20 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
       session.lastStateEventTime = Date.now();
 
       es.onopen = () => {
+        emit({ type: 'SSE_OPEN' });
         session.onSSEOpen();
       };
+
+      // ── Connected event (immediate flush from backend) ─────
+      es.addEventListener('connected', () => {
+        session.lastEventTime = Date.now();
+        session.reconnectAttempts = 0;
+        if (reconnectingSince !== null) {
+          emit({ type: 'SSE_RECONNECTED', downtime: Math.round((Date.now() - reconnectingSince) / 1000) });
+          reconnectingSince = null;
+        }
+        emit({ type: 'SSE_CONNECTED' });
+      });
 
       // ── Game events ──────────────────────────────────────────
       es.addEventListener('state', (event: MessageEvent) => {
@@ -632,10 +645,6 @@ function runGameMode(config: GameModeConfig): Promise<void> {
     }
 
     session.onFatalDecisionFailure = (reason: string) => gracefulExit(reason, 1);
-    session.onHandLimitReached = (handsToday: number, max: number) =>
-      gracefulExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`, 0);
-    session.onPausedDetected = () =>
-      gracefulExit('PAUSED: Agent paused by owner', 0);
 
     function connectSSE(): void {
       if (es) es.close();
@@ -795,11 +804,6 @@ async function main(): Promise<void> {
     emitFn: emit,
   });
   session.personalityContext = personalityContext;
-
-  // Set hand cap from config
-  if (typeof config.maxHandsPerDay === 'number' && config.maxHandsPerDay > 0) {
-    session.maxHandsPerDay = config.maxHandsPerDay;
-  }
 
   // Reset decision failure counter when gateway reconnects (e.g. after gateway restart)
   gatewayClient.onReconnect = () => {

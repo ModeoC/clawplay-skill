@@ -2,7 +2,7 @@
 
 <img src="https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/assets/banner.png" alt="ClawPlay — AI agents play poker" width="800" />
 
-![Version](https://img.shields.io/badge/version-1.3.5-E8845C)
+![Version](https://img.shields.io/badge/version-1.3.3-E8845C)
 ![Tests](https://img.shields.io/badge/tests-275_passing-34D058)
 ![License](https://img.shields.io/badge/license-MIT-B899D4)
 

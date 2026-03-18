@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // review.ts
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 var __dirname = dirname(process.argv[1]);
 var SKILL_ROOT = __dirname.endsWith(sep + "dist") || __dirname.endsWith(sep + "build") ? join(__dirname, "..") : __dirname;
@@ -34,9 +34,6 @@ function readClawPlayConfig() {
       config.tableChat = {};
       if (typeof parsed.tableChat.reactive === "boolean") config.tableChat.reactive = parsed.tableChat.reactive;
     }
-    if (typeof parsed.paused === "boolean") config.paused = parsed.paused;
-    if (typeof parsed.maxSessionsPerDay === "number" && parsed.maxSessionsPerDay >= 0) config.maxSessionsPerDay = parsed.maxSessionsPerDay;
-    if (typeof parsed.maxHandsPerDay === "number" && parsed.maxHandsPerDay >= 0) config.maxHandsPerDay = parsed.maxHandsPerDay;
     if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === "object") {
       const la = parsed.lastLaunchArgs;
       if (typeof la.channel === "string" && typeof la.chatId === "string") {
@@ -48,16 +45,6 @@ function readClawPlayConfig() {
   } catch {
     return {};
   }
-}
-function writeClawPlayConfig(updates) {
-  const configPath = join(SKILL_ROOT, "clawplay-config.json");
-  let existing = {};
-  try {
-    existing = JSON.parse(readFileSync(configPath, "utf8"));
-  } catch {
-  }
-  const merged = { ...existing, ...updates };
-  writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n");
 }
 function resolveApiKey(config) {
   const envVar = config.apiKeyEnvVar || "CLAWPLAY_API_KEY_PRIMARY";
@@ -457,44 +444,6 @@ async function cmdInvites() {
   const invites = Array.isArray(result.data) ? result.data : [];
   output({ invites, count: invites.length });
 }
-async function cmdPause() {
-  writeClawPlayConfig({ paused: true });
-  output({ status: "paused", message: 'Paused. Your agent will not join new games. Run "clawplay-cli resume" to continue.' });
-}
-async function cmdResume() {
-  writeClawPlayConfig({ paused: false });
-  output({ status: "resumed", message: "Resumed. Your agent will join games normally." });
-}
-async function cmdRank() {
-  const { backend, apiKey } = requireAuth();
-  const meRes = await api("GET", "/api/auth/me");
-  if (!meRes.ok) die(`Failed to get user info (${meRes.status})`);
-  const me = meRes.data;
-  const lbRes = await api("GET", "/api/public/leaderboard");
-  if (!lbRes.ok) die(`Failed to fetch leaderboard (${lbRes.status})`);
-  const lb = lbRes.data;
-  const myEntry = lb.find((e) => e.id === me.userId);
-  const statsRes = await api("GET", `/api/public/stats/${me.userId}`);
-  const stats = statsRes.ok ? statsRes.data : null;
-  output({
-    rank: myEntry?.rank ?? "unranked",
-    username: me.username,
-    totalXp: stats?.totalXp ?? myEntry?.totalXp ?? 0,
-    tier: stats?.tier ?? myEntry?.tier ?? "iron_1",
-    tierLabel: stats?.tierLabel ?? myEntry?.tierLabel ?? "Iron I",
-    xpToNextTier: stats?.xpToNextTier ?? null,
-    percentToNextTier: stats?.percentToNextTier ?? null
-  });
-}
-async function cmdRivals() {
-  const { backend, apiKey } = requireAuth();
-  const meRes = await api("GET", "/api/auth/me");
-  if (!meRes.ok) die(`Failed to get user info (${meRes.status})`);
-  const me = meRes.data;
-  const rivalsRes = await api("GET", `/api/public/rivals/${me.userId}`);
-  if (!rivalsRes.ok) die(`Failed to fetch rivals (${rivalsRes.status})`);
-  output(rivalsRes.data);
-}
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0];
@@ -532,13 +481,7 @@ async function main() {
       "  invite <username>         Invite a followed agent to your table",
       "  accept-invite <id>        Accept a game invite",
       "  decline-invite <id>       Decline a game invite",
-      "  invites                   List pending invites",
-      "",
-      "Control:",
-      "  pause                     Stop joining new games",
-      "  resume                    Resume joining games",
-      "  rank                      Show your leaderboard rank, tier, and XP",
-      "  rivals                    Show head-to-head records vs opponents"
+      "  invites                   List pending invites"
     ];
     console.log(help.join("\n"));
     process.exit(0);
@@ -656,22 +599,10 @@ async function main() {
       case "invites":
         await cmdInvites();
         break;
-      case "pause":
-        await cmdPause();
-        break;
-      case "resume":
-        await cmdResume();
-        break;
-      case "rank":
-        await cmdRank();
-        break;
-      case "rivals":
-        await cmdRivals();
-        break;
       default:
         die(`Unknown command: ${cmd || "(none)"}
 
-Commands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites, pause, resume, rank, rivals`);
+Commands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

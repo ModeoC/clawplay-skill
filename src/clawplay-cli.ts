@@ -11,7 +11,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readClawPlayConfig, writeClawPlayConfig, resolveApiKey, readLocalVersion, SKILL_ROOT } from './review.js';
+import { readClawPlayConfig, resolveApiKey, readLocalVersion, SKILL_ROOT } from './review.js';
 
 // ── Config ────────────────────────────────────────────────────────────
 
@@ -494,59 +494,6 @@ async function cmdInvites(): Promise<void> {
 }
 
 
-// ── Pause / Resume ───────────────────────────────────────────────────
-
-async function cmdPause(): Promise<void> {
-  writeClawPlayConfig({ paused: true });
-  output({ status: 'paused', message: 'Paused. Your agent will not join new games. Run "clawplay-cli resume" to continue.' });
-}
-
-async function cmdResume(): Promise<void> {
-  writeClawPlayConfig({ paused: false });
-  output({ status: 'resumed', message: 'Resumed. Your agent will join games normally.' });
-}
-
-// ── Rank / Rivals ────────────────────────────────────────────────────
-
-async function cmdRank(): Promise<void> {
-  const { backend, apiKey } = requireAuth();
-  // Get our user info
-  const meRes = await api('GET', '/api/auth/me');
-  if (!meRes.ok) die(`Failed to get user info (${meRes.status})`);
-  const me = meRes.data as { userId: string; username: string };
-
-  // Get leaderboard to find our rank
-  const lbRes = await api('GET', '/api/public/leaderboard');
-  if (!lbRes.ok) die(`Failed to fetch leaderboard (${lbRes.status})`);
-  const lb = lbRes.data as Array<{ id: string; username: string; rank: number; totalXp: number; tier: string; tierLabel: string }>;
-  const myEntry = lb.find(e => e.id === me.userId);
-
-  // Get detailed stats
-  const statsRes = await api('GET', `/api/public/stats/${me.userId}`);
-  const stats = statsRes.ok ? statsRes.data as { totalXp: number; tier: string; tierLabel: string; xpToNextTier: number; percentToNextTier: number } : null;
-
-  output({
-    rank: myEntry?.rank ?? 'unranked',
-    username: me.username,
-    totalXp: stats?.totalXp ?? myEntry?.totalXp ?? 0,
-    tier: stats?.tier ?? myEntry?.tier ?? 'iron_1',
-    tierLabel: stats?.tierLabel ?? myEntry?.tierLabel ?? 'Iron I',
-    xpToNextTier: stats?.xpToNextTier ?? null,
-    percentToNextTier: stats?.percentToNextTier ?? null,
-  });
-}
-
-async function cmdRivals(): Promise<void> {
-  const { backend, apiKey } = requireAuth();
-  const meRes = await api('GET', '/api/auth/me');
-  if (!meRes.ok) die(`Failed to get user info (${meRes.status})`);
-  const me = meRes.data as { userId: string };
-
-  const rivalsRes = await api('GET', `/api/public/rivals/${me.userId}`);
-  if (!rivalsRes.ok) die(`Failed to fetch rivals (${rivalsRes.status})`);
-  output(rivalsRes.data);
-}
-
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -588,12 +535,6 @@ async function main(): Promise<void> {
       '  accept-invite <id>        Accept a game invite',
       '  decline-invite <id>       Decline a game invite',
       '  invites                   List pending invites',
-      '',
-      'Control:',
-      '  pause                     Stop joining new games',
-      '  resume                    Resume joining games',
-      '  rank                      Show your leaderboard rank, tier, and XP',
-      '  rivals                    Show head-to-head records vs opponents',
     ];
     console.log(help.join('\n'));
     process.exit(0);
@@ -712,20 +653,8 @@ async function main(): Promise<void> {
       case 'invites':
         await cmdInvites();
         break;
-      case 'pause':
-        await cmdPause();
-        break;
-      case 'resume':
-        await cmdResume();
-        break;
-      case 'rank':
-        await cmdRank();
-        break;
-      case 'rivals':
-        await cmdRivals();
-        break;
       default:
-        die(`Unknown command: ${cmd || '(none)'}\n\nCommands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites, pause, resume, rank, rivals`);
+        die(`Unknown command: ${cmd || '(none)'}\n\nCommands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites`);
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

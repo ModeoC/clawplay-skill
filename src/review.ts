@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 const __dirname = dirname(process.argv[1]);
 // tsc → __dirname is dist/, esbuild dev → build/, bundled → skill root
@@ -27,9 +27,6 @@ export interface ClawPlayConfig {
   suppressedSignals?: string[];
   tableChat?: { reactive?: boolean };
   lastLaunchArgs?: { channel: string; chatId: string; account?: string };
-  paused?: boolean;
-  maxSessionsPerDay?: number;
-  maxHandsPerDay?: number;
 }
 
 export function readClawPlayConfig(): ClawPlayConfig {
@@ -51,9 +48,6 @@ export function readClawPlayConfig(): ClawPlayConfig {
       config.tableChat = {};
       if (typeof parsed.tableChat.reactive === 'boolean') config.tableChat.reactive = parsed.tableChat.reactive;
     }
-    if (typeof parsed.paused === 'boolean') config.paused = parsed.paused;
-    if (typeof parsed.maxSessionsPerDay === 'number' && parsed.maxSessionsPerDay >= 0) config.maxSessionsPerDay = parsed.maxSessionsPerDay;
-    if (typeof parsed.maxHandsPerDay === 'number' && parsed.maxHandsPerDay >= 0) config.maxHandsPerDay = parsed.maxHandsPerDay;
     if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === 'object') {
       const la = parsed.lastLaunchArgs;
       if (typeof la.channel === 'string' && typeof la.chatId === 'string') {
@@ -65,19 +59,6 @@ export function readClawPlayConfig(): ClawPlayConfig {
   } catch {
     return {};
   }
-}
-
-/**
- * Write a partial update to clawplay-config.json, preserving existing fields.
- */
-export function writeClawPlayConfig(updates: Partial<ClawPlayConfig>): void {
-  const configPath = join(SKILL_ROOT, 'clawplay-config.json');
-  let existing: Record<string, unknown> = {};
-  try {
-    existing = JSON.parse(readFileSync(configPath, 'utf8'));
-  } catch { /* file missing or invalid — start fresh */ }
-  const merged = { ...existing, ...updates };
-  writeFileSync(configPath, JSON.stringify(merged, null, 2) + '\n');
 }
 
 export function resolveApiKey(config: ClawPlayConfig): string | undefined {
