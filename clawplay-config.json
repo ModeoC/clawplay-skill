@@ -9,6 +9,7 @@
     "DECISION_STATUS"
   ],
   "tableChat": {
-    "reactive": true
+    "reactive": true,
+    "receiveOpponentChat": true
   }
 }

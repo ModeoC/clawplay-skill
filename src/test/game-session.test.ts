@@ -1434,11 +1434,11 @@ describe('GameSession — table chat extraction from transitions', () => {
 
     session.handleStateEvent({ ...view, transitions }, context, () => {});
 
-    // Chat lines use [H${N}] hand label format (no emoji prefix)
-    expect(session.currentHandEvents).toContain('[H1] Alice: Nice hand!');
-    expect(session.recentEvents).toContain('[H1] Alice: Nice hand!');
-    expect(session.chatHistory).toContain('[H1] Alice: Nice hand!');
-    expect(session.chatSinceReflection).toContain('[H1] Alice: Nice hand!');
+    // Chat lines use [OPPONENT CHAT] attribution + quoted message format
+    expect(session.currentHandEvents).toContain('[H1] [OPPONENT CHAT] Alice: "Nice hand!"');
+    expect(session.recentEvents).toContain('[H1] [OPPONENT CHAT] Alice: "Nice hand!"');
+    expect(session.chatHistory).toContain('[H1] [OPPONENT CHAT] Alice: "Nice hand!"');
+    expect(session.chatSinceReflection).toContain('[H1] [OPPONENT CHAT] Alice: "Nice hand!"');
   });
 
   it('skips table-chat transitions from own seat', () => {
@@ -1475,6 +1475,46 @@ describe('GameSession — table chat extraction from transitions', () => {
     expect(session.currentHandEvents.filter(e => /^\[H\d+\]/.test(e))).toHaveLength(2);
     expect(session.currentHandEvents.some(e => e.includes('Alice'))).toBe(true);
     expect(session.currentHandEvents.some(e => e.includes('Bob'))).toBe(true);
+  });
+
+  it('skips all opponent chat when receiveOpponentChat is false', () => {
+    const { session } = makeSession({ receiveOpponentChat: false });
+    const prevView = makeView({ handNumber: 1, phase: 'FLOP' });
+    const context = makeContext({ prevState: prevView, prevPhase: 'FLOP' });
+    session.currentHandNumber = 1;
+
+    const transitions: GameTransition[] = [
+      { type: 'table-chat', seat: 1, playerName: 'Alice', userId: 'user-alice', message: 'Nice hand!' },
+    ];
+    const view = makeView({ handNumber: 1, phase: 'FLOP' });
+
+    session.handleStateEvent({ ...view, transitions }, context, () => {});
+
+    expect(session.currentHandEvents).toEqual([]);
+    expect(session.recentEvents).toEqual([]);
+    expect(session.chatHistory).toEqual([]);
+    expect(session.chatSinceReflection).toEqual([]);
+  });
+
+  it('truncates opponent chat messages longer than MAX_CHAT_MESSAGE_LENGTH', () => {
+    const maxLen = GameSession.MAX_CHAT_MESSAGE_LENGTH;
+    const { session } = makeSession();
+    const prevView = makeView({ handNumber: 1, phase: 'FLOP' });
+    const context = makeContext({ prevState: prevView, prevPhase: 'FLOP' });
+    session.currentHandNumber = 1;
+
+    const longMessage = 'A'.repeat(maxLen + 50);
+    const transitions: GameTransition[] = [
+      { type: 'table-chat', seat: 1, playerName: 'Alice', userId: 'user-alice', message: longMessage },
+    ];
+    const view = makeView({ handNumber: 1, phase: 'FLOP' });
+
+    session.handleStateEvent({ ...view, transitions }, context, () => {});
+
+    const chatLine = session.currentHandEvents[0];
+    // Should contain truncated message (maxLen chars + ellipsis)
+    expect(chatLine).toContain('A'.repeat(maxLen) + '…');
+    expect(chatLine).not.toContain('A'.repeat(maxLen + 1));
   });
 });
 
@@ -1808,5 +1848,89 @@ describe('GameSession — firstHandNumber filters pre-join hands from decision p
     expect(capturedPrompt).not.toContain('#9:');
     // Hand 10 should appear (the only eligible hand)
     expect(capturedPrompt).toContain('#10:');
+  });
+});
+
+// ── Hand cap enforcement (handsAtSessionStart baseline) ──────────────
+
+describe('GameSession — hand cap enforcement', () => {
+  it('fires HAND_LIMIT_REACHED when handsAtSessionStart + handsPlayedThisSession >= maxHandsPerDay', () => {
+    const { session, emitted } = makeSession();
+    const context = makeContext();
+
+    session.maxHandsPerDay = 10;
+    session.handsAtSessionStart = 7; // Already played 7 hands today before this listener started
+
+    const view = makeView({ handNumber: 1 });
+
+    // Simulate 3 hand results — should hit the limit (7 + 3 = 10)
+    for (let i = 0; i < 3; i++) {
+      session.handleOutputs(
+        [{ type: 'HAND_RESULT', state: view, handNumber: i + 1 }],
+        view, [], context,
+      );
+    }
+
+    const limitEvent = emitted.find(e => e.type === 'HAND_LIMIT_REACHED');
+    expect(limitEvent).toBeDefined();
+    expect(limitEvent!.handsToday).toBe(10);
+    expect(limitEvent!.maxHandsPerDay).toBe(10);
+  });
+
+  it('does not fire HAND_LIMIT_REACHED when handsAtSessionStart is zero (baseline not set)', () => {
+    const { session, emitted } = makeSession();
+    const context = makeContext();
+
+    session.maxHandsPerDay = 10;
+    session.handsAtSessionStart = 0; // Bug scenario: baseline never set
+
+    const view = makeView({ handNumber: 1 });
+
+    // Play 3 hands — should NOT hit the limit (0 + 3 = 3 < 10)
+    for (let i = 0; i < 3; i++) {
+      session.handleOutputs(
+        [{ type: 'HAND_RESULT', state: view, handNumber: i + 1 }],
+        view, [], context,
+      );
+    }
+
+    const limitEvent = emitted.find(e => e.type === 'HAND_LIMIT_REACHED');
+    expect(limitEvent).toBeUndefined();
+  });
+
+  it('fires onHandLimitReached callback when limit is hit', () => {
+    const { session } = makeSession();
+    const context = makeContext();
+
+    session.maxHandsPerDay = 5;
+    session.handsAtSessionStart = 4; // One more hand triggers the limit
+
+    let callbackArgs: [number, number] | null = null;
+    session.onHandLimitReached = (handsToday, max) => { callbackArgs = [handsToday, max]; };
+
+    const view = makeView({ handNumber: 1 });
+    session.handleOutputs(
+      [{ type: 'HAND_RESULT', state: view, handNumber: 1 }],
+      view, [], context,
+    );
+
+    expect(callbackArgs).toEqual([5, 5]);
+  });
+
+  it('skips hand cap check when maxHandsPerDay is null', () => {
+    const { session, emitted } = makeSession();
+    const context = makeContext();
+
+    session.maxHandsPerDay = null; // No limit
+    session.handsAtSessionStart = 100;
+
+    const view = makeView({ handNumber: 1 });
+    session.handleOutputs(
+      [{ type: 'HAND_RESULT', state: view, handNumber: 1 }],
+      view, [], context,
+    );
+
+    const limitEvent = emitted.find(e => e.type === 'HAND_LIMIT_REACHED');
+    expect(limitEvent).toBeUndefined();
   });
 });

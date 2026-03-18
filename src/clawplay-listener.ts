@@ -815,6 +815,7 @@ async function main(): Promise<void> {
     reflectEveryNHands,
     suppressedSignals,
     tableChatReactive: config.tableChat?.reactive ?? true,
+    receiveOpponentChat: config.tableChat?.receiveOpponentChat ?? true,
     gatewayClient,
     debugFn: debug,
     emitFn: emit,
@@ -824,6 +825,41 @@ async function main(): Promise<void> {
   // Set hand cap from config
   if (typeof config.maxHandsPerDay === 'number' && config.maxHandsPerDay > 0) {
     session.maxHandsPerDay = config.maxHandsPerDay;
+  }
+
+  // Fetch heartbeat at startup — needed for hand limit baseline and session limit check
+  try {
+    const hbResp = await fetch(`${backendUrl}/api/lobby/heartbeat`, {
+      headers: { 'x-api-key': apiKey },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (hbResp.ok) {
+      const hb = await hbResp.json() as { handsToday?: number; sessionsToday?: number };
+
+      // Feature 1: Set hand limit baseline from today's actual hand count
+      if (typeof hb.handsToday === 'number') {
+        session.handsAtSessionStart = hb.handsToday;
+        emit({ type: 'HAND_LIMIT_BASELINE', handsToday: hb.handsToday, maxHandsPerDay: session.maxHandsPerDay });
+      }
+
+      // Feature 2: Enforce session limit before entering game loop
+      // Safe to exit here — no SSE connections, gateway WS, or intervals to clean up yet
+      if (typeof config.maxSessionsPerDay === 'number' && config.maxSessionsPerDay > 0
+        && typeof hb.sessionsToday === 'number' && hb.sessionsToday >= config.maxSessionsPerDay) {
+        emit({ type: 'SESSION_LIMIT_REACHED', sessionsToday: hb.sessionsToday, maxSessionsPerDay: config.maxSessionsPerDay });
+        // Notify the main agent so it knows why the listener didn't start
+        await session.notifyAgentSilent(
+          `[POKER CONTROL SIGNAL: SESSION_LIMIT_REACHED]\nDaily session limit reached (${hb.sessionsToday}/${config.maxSessionsPerDay}). The listener did not start a game. To play more today, update maxSessionsPerDay in clawplay-config.json or ask your human.`,
+        ).catch(() => {});
+        process.exit(0);
+      }
+    } else {
+      emit({ type: 'HEARTBEAT_STARTUP_FAILED', status: hbResp.status });
+    }
+  } catch (hbErr) {
+    const msg = hbErr instanceof Error ? hbErr.message : String(hbErr);
+    emit({ type: 'HEARTBEAT_STARTUP_FAILED', error: msg });
+    // Non-fatal — proceed without baseline (handsAtSessionStart stays 0, conservative)
   }
 
   // Reset decision failure counter when gateway reconnects (e.g. after gateway restart)

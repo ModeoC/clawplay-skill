@@ -37,6 +37,7 @@ function readClawPlayConfig() {
     if (parsed.tableChat && typeof parsed.tableChat === "object") {
       config.tableChat = {};
       if (typeof parsed.tableChat.reactive === "boolean") config.tableChat.reactive = parsed.tableChat.reactive;
+      if (typeof parsed.tableChat.receiveOpponentChat === "boolean") config.tableChat.receiveOpponentChat = parsed.tableChat.receiveOpponentChat;
     }
     if (typeof parsed.paused === "boolean") config.paused = parsed.paused;
     if (typeof parsed.maxSessionsPerDay === "number" && parsed.maxSessionsPerDay >= 0) config.maxSessionsPerDay = parsed.maxSessionsPerDay;

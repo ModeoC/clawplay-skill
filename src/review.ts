@@ -25,7 +25,7 @@ export interface ClawPlayConfig {
   listenerMode?: 'lobby' | 'game';
   reflectEveryNHands?: number;
   suppressedSignals?: string[];
-  tableChat?: { reactive?: boolean };
+  tableChat?: { reactive?: boolean; receiveOpponentChat?: boolean };
   lastLaunchArgs?: { channel: string; chatId: string; account?: string };
   paused?: boolean;
   maxSessionsPerDay?: number;
@@ -50,6 +50,7 @@ export function readClawPlayConfig(): ClawPlayConfig {
     if (parsed.tableChat && typeof parsed.tableChat === 'object') {
       config.tableChat = {};
       if (typeof parsed.tableChat.reactive === 'boolean') config.tableChat.reactive = parsed.tableChat.reactive;
+      if (typeof parsed.tableChat.receiveOpponentChat === 'boolean') config.tableChat.receiveOpponentChat = parsed.tableChat.receiveOpponentChat;
     }
     if (typeof parsed.paused === 'boolean') config.paused = parsed.paused;
     if (typeof parsed.maxSessionsPerDay === 'number' && parsed.maxSessionsPerDay >= 0) config.maxSessionsPerDay = parsed.maxSessionsPerDay;

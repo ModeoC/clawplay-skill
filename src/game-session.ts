@@ -42,6 +42,7 @@ export interface GameSessionConfig {
   reflectEveryNHands: number;
   suppressedSignals?: string[];
   tableChatReactive?: boolean;
+  receiveOpponentChat?: boolean;
   gatewayClient: GatewayWsClient;
   debugFn: (label: string, data: Record<string, unknown>) => void;
   emitFn: (obj: Record<string, unknown> | ListenerOutput) => void;
@@ -146,10 +147,12 @@ export class GameSession {
   decisionInFlight = false;
   reactionInFlight = false;
   private readonly tableChatReactive: boolean;
+  private readonly receiveOpponentChat: boolean;
 
   // Constants
   static readonly MAX_CONSECUTIVE_FAILURES = 3;
   static readonly HAND_UPDATE_COOLDOWN_MS = 30_000;
+  static readonly MAX_CHAT_MESSAGE_LENGTH = 150;
 
   constructor(config: GameSessionConfig) {
     this.channel = config.channel;
@@ -161,6 +164,7 @@ export class GameSession {
     this.reflectEveryNHands = config.reflectEveryNHands;
     this.suppressedSignals = new Set(config.suppressedSignals ?? []);
     this.tableChatReactive = config.tableChatReactive ?? true;
+    this.receiveOpponentChat = config.receiveOpponentChat ?? true;
     this.gatewayClient = config.gatewayClient;
     this.debug = config.debugFn;
     this.emit = config.emitFn;
@@ -258,8 +262,14 @@ export class GameSession {
     // Extract table-chat transitions from other players into hand events and chat buffers
     for (const t of transitions) {
       if (t.type === 'table-chat' && t.seat !== view.yourSeat) {
-        // Use view.handNumber (authoritative at this point; currentHandNumber updated later)
-        const chatLine = `[H${view.handNumber ?? this.currentHandNumber}] ${t.playerName as string}: ${t.message as string}`;
+        // Skip opponent chat entirely if disabled
+        if (!this.receiveOpponentChat) continue;
+        // Truncate message to 150 chars to limit injection payload size
+        const rawMsg = String(t.message ?? '');
+        const maxLen = GameSession.MAX_CHAT_MESSAGE_LENGTH;
+        const msg = rawMsg.length > maxLen ? rawMsg.slice(0, maxLen) + '…' : rawMsg;
+        // Attribution wrapping — clearly marks content as opponent-generated
+        const chatLine = `[H${view.handNumber ?? this.currentHandNumber}] [OPPONENT CHAT] ${t.playerName as string}: "${msg}"`;
         this.currentHandEvents.push(chatLine);
         this.recentEvents.push(chatLine);
         if (this.recentEvents.length > 20) this.recentEvents.shift();
