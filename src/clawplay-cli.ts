@@ -9,9 +9,9 @@
  * Env: CLAWPLAY_API_KEY_PRIMARY
  */
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { readClawPlayConfig, resolveApiKey, readLocalVersion, SKILL_ROOT } from './review.js';
+import { readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { readClawPlayConfig, writeClawPlayConfig, resolveApiKey, readLocalVersion, SKILL_ROOT } from './review.js';
 
 // ── Config ────────────────────────────────────────────────────────────
 
@@ -494,6 +494,143 @@ async function cmdInvites(): Promise<void> {
 }
 
 
+// ── Pause / Resume ───────────────────────────────────────────────────
+
+async function cmdPause(): Promise<void> {
+  writeClawPlayConfig({ paused: true });
+  output({ status: 'paused', message: 'Paused. Your agent will not join new games. Run "clawplay-cli resume" to continue.' });
+}
+
+async function cmdResume(): Promise<void> {
+  writeClawPlayConfig({ paused: false });
+  output({ status: 'resumed', message: 'Resumed. Your agent will join games normally.' });
+}
+
+// ── Rank / Rivals ────────────────────────────────────────────────────
+
+async function cmdRank(): Promise<void> {
+  const { backend, apiKey } = requireAuth();
+  // Get our user info
+  const meRes = await api('GET', '/api/auth/me');
+  if (!meRes.ok) die(`Failed to get user info (${meRes.status})`);
+  const me = meRes.data as { userId: string; username: string };
+
+  // Get leaderboard to find our rank
+  const lbRes = await api('GET', '/api/public/leaderboard');
+  if (!lbRes.ok) die(`Failed to fetch leaderboard (${lbRes.status})`);
+  const lb = lbRes.data as Array<{ id: string; username: string; rank: number; totalXp: number; tier: string; tierLabel: string; rankDelta: number | null; weeklyWinnings: number }>;
+  const myEntry = lb.find(e => e.id === me.userId);
+
+  // Get detailed stats
+  const statsRes = await api('GET', `/api/public/stats/${me.userId}`);
+  const stats = statsRes.ok ? statsRes.data as { totalXp: number; tier: string; tierLabel: string; xpToNextTier: number; percentToNextTier: number } : null;
+
+  output({
+    rank: myEntry?.rank ?? 'unranked',
+    username: me.username,
+    totalXp: stats?.totalXp ?? myEntry?.totalXp ?? 0,
+    tier: stats?.tier ?? myEntry?.tier ?? 'iron_1',
+    tierLabel: stats?.tierLabel ?? myEntry?.tierLabel ?? 'Iron I',
+    rankDelta: myEntry?.rankDelta ?? null,
+    xpToNextTier: stats?.xpToNextTier ?? null,
+    percentToNextTier: stats?.percentToNextTier ?? null,
+  });
+}
+
+async function cmdRivals(): Promise<void> {
+  const { backend, apiKey } = requireAuth();
+  const meRes = await api('GET', '/api/auth/me');
+  if (!meRes.ok) die(`Failed to get user info (${meRes.status})`);
+  const me = meRes.data as { userId: string };
+
+  const rivalsRes = await api('GET', `/api/public/rivals/${me.userId}`);
+  if (!rivalsRes.ok) die(`Failed to fetch rivals (${rivalsRes.status})`);
+  output(rivalsRes.data);
+}
+
+// ── Leaderboard ─────────────────────────────────────────────────────
+
+async function cmdLeaderboard(): Promise<void> {
+  const resp = await fetch(`${BACKEND}/api/public/leaderboard`, {
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await resp.text();
+  let data: unknown;
+  try { data = JSON.parse(text); } catch { data = text; }
+  if (!resp.ok) die(`Leaderboard failed (${resp.status}): ${JSON.stringify(data)}`);
+  output(data);
+}
+
+// ── Session Cleanup ─────────────────────────────────────────────────
+
+function cmdCleanupSessions(): void {
+  const config = readClawPlayConfig();
+  const agentId = config.agentId || 'main';
+  const storePath = join(
+    process.env.HOME || '~',
+    '.openclaw', 'agents', agentId, 'sessions', 'sessions.json',
+  );
+
+  let raw: string;
+  try {
+    raw = readFileSync(storePath, 'utf8');
+  } catch {
+    output({ removed: 0, remaining: 0, message: 'sessions.json not found' });
+    return;
+  }
+
+  let store: Record<string, unknown>;
+  try {
+    store = JSON.parse(raw);
+  } catch {
+    die('Failed to parse sessions.json');
+  }
+
+  const beforeCount = Object.keys(store).length;
+  const keysToRemove: string[] = [];
+
+  for (const key of Object.keys(store)) {
+    if (key.includes('subagent') && key.includes('poker')) {
+      keysToRemove.push(key);
+    }
+  }
+
+  if (keysToRemove.length === 0) {
+    output({ removed: 0, remaining: beforeCount });
+    return;
+  }
+
+  for (const key of keysToRemove) {
+    delete store[key];
+  }
+
+  // Atomic write
+  const tmpPath = storePath + '.cleanup-tmp';
+  writeFileSync(tmpPath, JSON.stringify(store, null, 2), 'utf8');
+  renameSync(tmpPath, storePath);
+
+  // Clean up orphaned session transcript files
+  const sessionsDir = dirname(storePath);
+  let transcriptsRemoved = 0;
+  try {
+    const files = readdirSync(sessionsDir);
+    for (const file of files) {
+      if (file.includes('poker') && file.includes('subagent') && file.endsWith('.jsonl')) {
+        try {
+          unlinkSync(join(sessionsDir, file));
+          transcriptsRemoved++;
+        } catch { /* skip files we can't delete */ }
+      }
+    }
+  } catch { /* skip if dir listing fails */ }
+
+  output({
+    removed: keysToRemove.length,
+    remaining: Object.keys(store).length,
+    transcriptsRemoved,
+  });
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -535,6 +672,14 @@ async function main(): Promise<void> {
       '  accept-invite <id>        Accept a game invite',
       '  decline-invite <id>       Decline a game invite',
       '  invites                   List pending invites',
+      '',
+      'Control:',
+      '  pause                     Stop joining new games',
+      '  resume                    Resume joining games',
+      '  rank                      Show your leaderboard rank, tier, and XP',
+      '  rivals                    Show head-to-head records vs opponents',
+      '  leaderboard               Show the full leaderboard',
+      '  cleanup-sessions          Remove poker session entries from OpenClaw store',
     ];
     console.log(help.join('\n'));
     process.exit(0);
@@ -653,8 +798,26 @@ async function main(): Promise<void> {
       case 'invites':
         await cmdInvites();
         break;
+      case 'pause':
+        await cmdPause();
+        break;
+      case 'resume':
+        await cmdResume();
+        break;
+      case 'rank':
+        await cmdRank();
+        break;
+      case 'rivals':
+        await cmdRivals();
+        break;
+      case 'leaderboard':
+        await cmdLeaderboard();
+        break;
+      case 'cleanup-sessions':
+        cmdCleanupSessions();
+        break;
       default:
-        die(`Unknown command: ${cmd || '(none)'}\n\nCommands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites`);
+        die(`Unknown command: ${cmd || '(none)'}\n\nCommands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites, pause, resume, rank, rivals, leaderboard, cleanup-sessions`);
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

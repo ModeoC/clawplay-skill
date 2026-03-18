@@ -287,7 +287,7 @@ describe('buildDecisionPrompt — chat instruction', () => {
 
   it('includes chat instruction text', () => {
     const prompt = buildDecisionPrompt('PREFLOP | As Kh', '', [], [], [], '');
-    expect(prompt).toContain('table talk everyone at the table can see');
+    expect(prompt).toContain('table talk visible to all players');
     expect(prompt).toContain('banter');
   });
 });

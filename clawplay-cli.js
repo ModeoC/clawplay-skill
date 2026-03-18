@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 
+// clawplay-cli.ts
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, renameSync, readdirSync, unlinkSync } from "node:fs";
+import { join as join2, dirname as dirname2 } from "node:path";
+
 // review.ts
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 var __dirname = dirname(process.argv[1]);
 var SKILL_ROOT = __dirname.endsWith(sep + "dist") || __dirname.endsWith(sep + "build") ? join(__dirname, "..") : __dirname;
@@ -34,6 +38,9 @@ function readClawPlayConfig() {
       config.tableChat = {};
       if (typeof parsed.tableChat.reactive === "boolean") config.tableChat.reactive = parsed.tableChat.reactive;
     }
+    if (typeof parsed.paused === "boolean") config.paused = parsed.paused;
+    if (typeof parsed.maxSessionsPerDay === "number" && parsed.maxSessionsPerDay >= 0) config.maxSessionsPerDay = parsed.maxSessionsPerDay;
+    if (typeof parsed.maxHandsPerDay === "number" && parsed.maxHandsPerDay >= 0) config.maxHandsPerDay = parsed.maxHandsPerDay;
     if (parsed.lastLaunchArgs && typeof parsed.lastLaunchArgs === "object") {
       const la = parsed.lastLaunchArgs;
       if (typeof la.channel === "string" && typeof la.chatId === "string") {
@@ -45,6 +52,16 @@ function readClawPlayConfig() {
   } catch {
     return {};
   }
+}
+function writeClawPlayConfig(updates) {
+  const configPath = join(SKILL_ROOT, "clawplay-config.json");
+  let existing = {};
+  try {
+    existing = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+  }
+  const merged = { ...existing, ...updates };
+  writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n");
 }
 function resolveApiKey(config) {
   const envVar = config.apiKeyEnvVar || "CLAWPLAY_API_KEY_PRIMARY";
@@ -444,6 +461,121 @@ async function cmdInvites() {
   const invites = Array.isArray(result.data) ? result.data : [];
   output({ invites, count: invites.length });
 }
+async function cmdPause() {
+  writeClawPlayConfig({ paused: true });
+  output({ status: "paused", message: 'Paused. Your agent will not join new games. Run "clawplay-cli resume" to continue.' });
+}
+async function cmdResume() {
+  writeClawPlayConfig({ paused: false });
+  output({ status: "resumed", message: "Resumed. Your agent will join games normally." });
+}
+async function cmdRank() {
+  const { backend, apiKey } = requireAuth();
+  const meRes = await api("GET", "/api/auth/me");
+  if (!meRes.ok) die(`Failed to get user info (${meRes.status})`);
+  const me = meRes.data;
+  const lbRes = await api("GET", "/api/public/leaderboard");
+  if (!lbRes.ok) die(`Failed to fetch leaderboard (${lbRes.status})`);
+  const lb = lbRes.data;
+  const myEntry = lb.find((e) => e.id === me.userId);
+  const statsRes = await api("GET", `/api/public/stats/${me.userId}`);
+  const stats = statsRes.ok ? statsRes.data : null;
+  output({
+    rank: myEntry?.rank ?? "unranked",
+    username: me.username,
+    totalXp: stats?.totalXp ?? myEntry?.totalXp ?? 0,
+    tier: stats?.tier ?? myEntry?.tier ?? "iron_1",
+    tierLabel: stats?.tierLabel ?? myEntry?.tierLabel ?? "Iron I",
+    rankDelta: myEntry?.rankDelta ?? null,
+    xpToNextTier: stats?.xpToNextTier ?? null,
+    percentToNextTier: stats?.percentToNextTier ?? null
+  });
+}
+async function cmdRivals() {
+  const { backend, apiKey } = requireAuth();
+  const meRes = await api("GET", "/api/auth/me");
+  if (!meRes.ok) die(`Failed to get user info (${meRes.status})`);
+  const me = meRes.data;
+  const rivalsRes = await api("GET", `/api/public/rivals/${me.userId}`);
+  if (!rivalsRes.ok) die(`Failed to fetch rivals (${rivalsRes.status})`);
+  output(rivalsRes.data);
+}
+async function cmdLeaderboard() {
+  const resp = await fetch(`${BACKEND}/api/public/leaderboard`, {
+    signal: AbortSignal.timeout(15e3)
+  });
+  const text = await resp.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = text;
+  }
+  if (!resp.ok) die(`Leaderboard failed (${resp.status}): ${JSON.stringify(data)}`);
+  output(data);
+}
+function cmdCleanupSessions() {
+  const config = readClawPlayConfig();
+  const agentId = config.agentId || "main";
+  const storePath = join2(
+    process.env.HOME || "~",
+    ".openclaw",
+    "agents",
+    agentId,
+    "sessions",
+    "sessions.json"
+  );
+  let raw;
+  try {
+    raw = readFileSync2(storePath, "utf8");
+  } catch {
+    output({ removed: 0, remaining: 0, message: "sessions.json not found" });
+    return;
+  }
+  let store;
+  try {
+    store = JSON.parse(raw);
+  } catch {
+    die("Failed to parse sessions.json");
+  }
+  const beforeCount = Object.keys(store).length;
+  const keysToRemove = [];
+  for (const key of Object.keys(store)) {
+    if (key.includes("subagent") && key.includes("poker")) {
+      keysToRemove.push(key);
+    }
+  }
+  if (keysToRemove.length === 0) {
+    output({ removed: 0, remaining: beforeCount });
+    return;
+  }
+  for (const key of keysToRemove) {
+    delete store[key];
+  }
+  const tmpPath = storePath + ".cleanup-tmp";
+  writeFileSync2(tmpPath, JSON.stringify(store, null, 2), "utf8");
+  renameSync(tmpPath, storePath);
+  const sessionsDir = dirname2(storePath);
+  let transcriptsRemoved = 0;
+  try {
+    const files = readdirSync(sessionsDir);
+    for (const file of files) {
+      if (file.includes("poker") && file.includes("subagent") && file.endsWith(".jsonl")) {
+        try {
+          unlinkSync(join2(sessionsDir, file));
+          transcriptsRemoved++;
+        } catch {
+        }
+      }
+    }
+  } catch {
+  }
+  output({
+    removed: keysToRemove.length,
+    remaining: Object.keys(store).length,
+    transcriptsRemoved
+  });
+}
 async function main() {
   const args = process.argv.slice(2);
   const cmd = args[0];
@@ -481,7 +613,15 @@ async function main() {
       "  invite <username>         Invite a followed agent to your table",
       "  accept-invite <id>        Accept a game invite",
       "  decline-invite <id>       Decline a game invite",
-      "  invites                   List pending invites"
+      "  invites                   List pending invites",
+      "",
+      "Control:",
+      "  pause                     Stop joining new games",
+      "  resume                    Resume joining games",
+      "  rank                      Show your leaderboard rank, tier, and XP",
+      "  rivals                    Show head-to-head records vs opponents",
+      "  leaderboard               Show the full leaderboard",
+      "  cleanup-sessions          Remove poker session entries from OpenClaw store"
     ];
     console.log(help.join("\n"));
     process.exit(0);
@@ -599,10 +739,28 @@ async function main() {
       case "invites":
         await cmdInvites();
         break;
+      case "pause":
+        await cmdPause();
+        break;
+      case "resume":
+        await cmdResume();
+        break;
+      case "rank":
+        await cmdRank();
+        break;
+      case "rivals":
+        await cmdRivals();
+        break;
+      case "leaderboard":
+        await cmdLeaderboard();
+        break;
+      case "cleanup-sessions":
+        cmdCleanupSessions();
+        break;
       default:
         die(`Unknown command: ${cmd || "(none)"}
 
-Commands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites`);
+Commands: signup, balance, status, tables, modes, join, game-state, hand-history, session-summary, spectator-token, rebuy, leave, player-stats, prompt, claim, heartbeat, check-update, discover, follow, unfollow, following, followers, block, unblock, invite, accept-invite, decline-invite, invites, pause, resume, rank, rivals, leaderboard, cleanup-sessions`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
