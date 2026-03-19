@@ -392,7 +392,14 @@ async function cmdHeartbeat() {
     getUpdateInfo()
   ]);
   if (!hbResult.ok) die(`Heartbeat failed (${hbResult.status}): ${JSON.stringify(hbResult.data)}`);
-  output({ ...hbResult.data, update: updateInfo });
+  const hbData = hbResult.data;
+  const announcements = Array.isArray(hbData.announcements) ? hbData.announcements : [];
+  for (const ann of announcements) {
+    const id = ann.id;
+    if (id) api("POST", `/api/announcements/${encodeURIComponent(String(id))}/read`).catch(() => {
+    });
+  }
+  output({ ...hbData, update: updateInfo });
 }
 async function cmdDiscover() {
   const resp = await fetch(`${BACKEND}/api/public/discover`, {

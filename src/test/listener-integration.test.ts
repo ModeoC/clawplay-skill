@@ -232,6 +232,77 @@ describe('Integration: full hand lifecycle', () => {
 
     expect(session.consecutiveDecisionFailures).toBe(0);
   });
+
+  it('plays 5 consecutive hands with state carryover and reflection', async () => {
+    const mockGw = makeMockGatewayClient('{"action":"check","narration":"I check."}');
+
+    // Track callAgent invocations to distinguish decisions from reflections
+    const agentCalls: Array<{ type: 'decision' | 'reflection'; hand: number }> = [];
+    const originalCallAgent = mockGw.callAgent;
+    mockGw.callAgent = async (...args: unknown[]) => {
+      const params = args[0] as Record<string, unknown>;
+      const sessionKey = (params.sessionKey as string) || '';
+      if (sessionKey.includes('reflect')) {
+        agentCalls.push({ type: 'reflection', hand: 0 });
+      } else {
+        agentCalls.push({ type: 'decision', hand: 0 });
+      }
+      return originalCallAgent(...args);
+    };
+
+    const { session } = makeIntegrationSession({
+      backendUrl: sseServer.url,
+      gatewayClient: mockGw,
+      reflectEveryNHands: 3,
+    });
+
+    const context: ListenerContext = { prevState: null, prevPhase: null, lastActionType: null, lastReportedHand: 0, lastTurnKey: null };
+    const gracefulExit = (_reason: string, _exitCode: number) => {};
+    let fatalError = '';
+    session.onFatalDecisionFailure = (reason) => { fatalError = reason; };
+
+    for (let hand = 1; hand <= 5; hand++) {
+      const views = fullHandViews(hand);
+
+      // a. Push preflop (not our turn)
+      session.handleStateEvent(views.preflop, context, gracefulExit);
+
+      // b. Push flop with YOUR_TURN
+      session.handleStateEvent(views.flopYourTurn, context, gracefulExit);
+
+      // c. Wait for decision to resolve
+      await session.lastDecision;
+
+      // d. Push showdown (triggers HAND_RESULT → handsPlayedThisSession++)
+      session.handleStateEvent(views.showdown, context, gracefulExit);
+
+      // e. Push next hand preflop (triggers hand change + potential reflection)
+      session.handleStateEvent(views.waiting, context, gracefulExit);
+    }
+
+    // Wait for any in-flight reflection calls to settle
+    await vi.waitFor(() => {
+      const decisionCalls = agentCalls.filter(c => c.type === 'decision');
+      expect(decisionCalls).toHaveLength(5);
+    });
+
+    // Verify: 5 decision calls made
+    const decisionCalls = agentCalls.filter(c => c.type === 'decision');
+    expect(decisionCalls).toHaveLength(5);
+
+    // Verify: at least 1 reflection call
+    // With reflectEveryNHands=3: hand transitions 1→2 (+1), 2→3 (+2), 3→4 (+3 → triggers),
+    // 4→5 (+1), 5→6 (+2). So exactly 1 reflection.
+    const reflectionCalls = agentCalls.filter(c => c.type === 'reflection');
+    expect(reflectionCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Verify session state
+    expect(session.handsPlayedThisSession).toBe(5);
+    expect(session.currentHandNumber).toBe(6); // after 5th hand, waiting view starts hand 6
+
+    // Verify no fatal errors
+    expect(fatalError).toBe('');
+  });
 });
 
 describe('Integration: SSE server action capture', () => {

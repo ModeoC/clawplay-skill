@@ -1384,7 +1384,9 @@ var GameSession = class _GameSession {
         thinking: "low",
         timeout: 15
       }, 2e4).then(() => {
-      }).catch(() => {
+        this.emit({ type: "SESSION_WARMUP_OK" });
+      }).catch((e) => {
+        this.emit({ type: "WARMUP_FAILED", error: e instanceof Error ? e.message : String(e) });
       });
     } else {
       this.emit({ type: "SSE_RECONNECT" });

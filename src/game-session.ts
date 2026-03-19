@@ -231,7 +231,11 @@ export class GameSession {
         message: WARMUP_MESSAGE,
         thinking: 'low',
         timeout: 15,
-      }, 20_000).then(() => {}).catch(() => {});
+      }, 20_000).then(() => {
+        this.emit({ type: 'SESSION_WARMUP_OK' });
+      }).catch((e: unknown) => {
+        this.emit({ type: 'WARMUP_FAILED', error: e instanceof Error ? e.message : String(e) });
+      });
     } else {
       this.emit({ type: 'SSE_RECONNECT' });
     }

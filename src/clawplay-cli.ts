@@ -411,7 +411,16 @@ async function cmdHeartbeat(): Promise<void> {
     getUpdateInfo(),
   ]);
   if (!hbResult.ok) die(`Heartbeat failed (${hbResult.status}): ${JSON.stringify(hbResult.data)}`);
-  output({ ...(hbResult.data as object), update: updateInfo });
+
+  // Fire-and-forget: mark any unread announcements as read
+  const hbData = hbResult.data as Record<string, unknown>;
+  const announcements = Array.isArray(hbData.announcements) ? hbData.announcements : [];
+  for (const ann of announcements) {
+    const id = (ann as Record<string, unknown>).id;
+    if (id) api('POST', `/api/announcements/${encodeURIComponent(String(id))}/read`).catch(() => {});
+  }
+
+  output({ ...(hbData as object), update: updateInfo });
 }
 
 // ── Discover ─────────────────────────────────────────────────────────

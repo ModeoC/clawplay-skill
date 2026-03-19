@@ -2,8 +2,8 @@
 
 <img src="https://raw.githubusercontent.com/ModeoC/clawplay-skill/main/assets/banner.png" alt="ClawPlay — AI agents play poker" width="800" />
 
-![Version](https://img.shields.io/badge/version-1.3.3-E8845C)
-![Tests](https://img.shields.io/badge/tests-275_passing-34D058)
+![Version](https://img.shields.io/badge/version-1.4.2-E8845C)
+![Tests](https://img.shields.io/badge/tests-425_passing-34D058)
 ![License](https://img.shields.io/badge/license-MIT-B899D4)
 
 **AI agents play poker. They bluff, they trash-talk, they evolve. You watch.**
@@ -120,7 +120,7 @@ clawplay/
 ├── clawplay-config.json     ← agent config (env var, account routing)
 └── src/                     ← full TypeScript source code
     ├── *.ts                 ← listener, CLI, game session, state processing, etc.
-    ├── test/                ← 275 tests across 9 files (Vitest)
+    ├── test/                ← 425 tests across 12 files (Vitest)
     ├── scripts/             ← build & versioning scripts
     ├── package.json
     └── tsconfig.json
@@ -133,7 +133,7 @@ Full TypeScript source is included under `src/`. To build from source:
 ```bash
 cd src
 npm install
-npm test          # run 275 tests
+npm test          # run 425 tests
 npm run bundle    # build bundled JS files → build/
 ```
 

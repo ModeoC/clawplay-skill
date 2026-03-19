@@ -1934,3 +1934,182 @@ describe('GameSession — hand cap enforcement', () => {
     expect(limitEvent).toBeUndefined();
   });
 });
+
+// ── Warmup event emission ────────────────────────────────────────────
+
+describe('GameSession — warmup event emission', () => {
+  it('emits SESSION_WARMUP_OK when warmup succeeds', async () => {
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async () => ({ payloads: [{ text: 'warmup done' }] });
+
+    const { session, emitted } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+
+    session.onSSEOpen();
+
+    // Wait a tick for the .then() chain to settle
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(emitted.find(e => e.type === 'SESSION_WARMUP_OK')).toBeTruthy();
+  });
+
+  it('emits WARMUP_FAILED when warmup callAgent rejects', async () => {
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async () => { throw new Error('gateway unreachable'); };
+
+    const { session, emitted } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+
+    session.onSSEOpen();
+
+    // Wait a tick for the .catch() chain to settle
+    await new Promise(r => setTimeout(r, 50));
+
+    const failed = emitted.find(e => e.type === 'WARMUP_FAILED');
+    expect(failed).toBeTruthy();
+    expect(failed!.error).toBe('gateway unreachable');
+  });
+});
+
+// ── Reactive chat (sendReaction) ─────────────────────────────────────
+
+describe('GameSession — sendReaction via DRAMA_MOMENT', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('sends chat to backend on drama moment', async () => {
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async () => ({ payloads: [{ text: '{"chat":"wow!"}' }] });
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    session.currentHandNumber = 1;
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '',
+    } as Response);
+
+    const context = makeContext();
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView({ isYourTurn: false }),
+      description: 'Alice goes all-in for 500',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    // Wait for the fire-and-forget async chain to settle
+    await new Promise(r => setTimeout(r, 100));
+
+    const chatCall = fetchSpy.mock.calls.find(c =>
+      typeof c[0] === 'string' && c[0].includes('/api/me/game/chat'));
+    expect(chatCall).toBeTruthy();
+    const body = JSON.parse((chatCall![1] as RequestInit).body as string);
+    expect(body.message).toBe('wow!');
+  });
+
+  it('skips reaction when tableChatReactive is false', async () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"chat":"wow"}' }] }; };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+      tableChatReactive: false,
+    });
+    session.currentHandNumber = 1;
+
+    const context = makeContext();
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView({ isYourTurn: false }),
+      description: 'Big pot',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(callAgentCalled).toBe(false);
+  });
+
+  it('skips reaction when decisionInFlight is true', async () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"chat":"wow"}' }] }; };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    session.currentHandNumber = 1;
+    session.decisionInFlight = true;
+
+    const context = makeContext();
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView({ isYourTurn: false }),
+      description: 'Showdown',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(callAgentCalled).toBe(false);
+  });
+
+  it('skips reaction when reactionInFlight is true', async () => {
+    const mockGw = makeMockGatewayClient();
+    let callAgentCalled = false;
+    mockGw.callAgent = async () => { callAgentCalled = true; return { payloads: [{ text: '{"chat":"wow"}' }] }; };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    session.currentHandNumber = 1;
+    session.reactionInFlight = true;
+
+    const context = makeContext();
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView({ isYourTurn: false }),
+      description: 'All-in showdown',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(callAgentCalled).toBe(false);
+  });
+
+  it('handles callAgent rejection gracefully', async () => {
+    const mockGw = makeMockGatewayClient();
+    mockGw.callAgent = async () => { throw new Error('agent crashed'); };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    session.currentHandNumber = 1;
+
+    const context = makeContext();
+    const output: ListenerOutput = {
+      type: 'DRAMA_MOMENT',
+      state: makeView({ isYourTurn: false }),
+      description: 'Drama unfolds',
+      handNumber: 1,
+    };
+    session.handleOutputs([output], makeView(), [], context);
+
+    // Wait for the async chain to settle — should not throw
+    await new Promise(r => setTimeout(r, 100));
+
+    expect(session.reactionInFlight).toBe(false);
+  });
+});
