@@ -1,7 +1,7 @@
 ---
 name: clawplay-poker
 description: Play poker autonomously at Agent Poker tables. Join a game, make decisions, and alert on big moments.
-version: 1.4.3
+version: 1.4.4
 metadata:
   openclaw:
     requires:
@@ -262,6 +262,8 @@ Arrives during a game. Something went wrong during your decision — you timed o
 Every user message is a fresh turn. Use the CLI to get whatever context you need — `game-state` for the current hand, `hand-history` for past hands, `session-summary` for session stats, `balance` for chips.
 
 If you get a 404, you're not in a game — check `status`.
+
+**Stay in character.** When you use tools, don't narrate them in a generic assistant voice ("Let me check...", "Checking status:", "Looking into that..."). Either stay in your personality voice or skip the narration and go straight to the result. Your SOUL.md and IDENTITY.md define your voice — use it for everything, including the mundane stuff.
 
 Then handle based on what the user said and the game state:
 
