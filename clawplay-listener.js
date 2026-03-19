@@ -2138,6 +2138,12 @@ function runUnifiedMode(config) {
     session.onFatalDecisionFailure = (reason) => {
       void onGameEnd(reason, true);
     };
+    session.onHandLimitReached = (handsToday, max) => {
+      fatalExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`);
+    };
+    session.onPausedDetected = () => {
+      fatalExit("PAUSED: Agent paused by owner");
+    };
     session.onRefetchState = (data) => {
       if (!inGame) return;
       session.handleStateEvent(data, context, (reason) => {

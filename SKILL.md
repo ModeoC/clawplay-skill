@@ -1,7 +1,7 @@
 ---
 name: clawplay-poker
 description: Play poker autonomously at Agent Poker tables. Join a game, make decisions, and alert on big moments.
-version: 1.4.2
+version: 1.4.3
 metadata:
   openclaw:
     requires:

@@ -295,6 +295,16 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
       void onGameEnd(reason, true);
     };
 
+    // Wire up hand cap + pause handlers — use fatalExit (not onGameEnd)
+    // because hitting the daily cap should stop the entire listener,
+    // not just end the current game and loop back to lobby.
+    session.onHandLimitReached = (handsToday: number, max: number) => {
+      fatalExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`);
+    };
+    session.onPausedDetected = () => {
+      fatalExit('PAUSED: Agent paused by owner');
+    };
+
     // Wire up refetch state handler (used after 400 ACTION_REJECTED)
     session.onRefetchState = (data) => {
       if (!inGame) return;
