@@ -404,7 +404,6 @@ var init_dist2 = __esm({
 // clawplay-listener.ts
 import { readFileSync as readFileSync4, writeFileSync as writeFileSync3, unlinkSync as unlinkSync2, createWriteStream } from "node:fs";
 import { join as join4 } from "node:path";
-import { execFile as execFile2 } from "node:child_process";
 
 // review.ts
 import { readFileSync, writeFileSync } from "node:fs";
@@ -429,7 +428,6 @@ function readClawPlayConfig() {
     if (typeof parsed.apiKeyEnvVar === "string" && parsed.apiKeyEnvVar) config.apiKeyEnvVar = parsed.apiKeyEnvVar;
     if (typeof parsed.accountId === "string" && parsed.accountId) config.accountId = parsed.accountId;
     if (typeof parsed.agentId === "string" && parsed.agentId) config.agentId = parsed.agentId;
-    if (["lobby", "game"].includes(parsed.listenerMode)) config.listenerMode = parsed.listenerMode;
     if (typeof parsed.reflectEveryNHands === "number" && parsed.reflectEveryNHands > 0) config.reflectEveryNHands = parsed.reflectEveryNHands;
     if (Array.isArray(parsed.suppressedSignals)) {
       config.suppressedSignals = parsed.suppressedSignals.filter(
@@ -1583,6 +1581,12 @@ var GameSession = class _GameSession {
   checkHandCap() {
     if (this.maxHandsPerDay == null) return;
     const handsToday = this.handsAtSessionStart + this.handsPlayedThisSession;
+    this.debug("HAND_CAP_CHECK", {
+      handsAtSessionStart: this.handsAtSessionStart,
+      handsPlayedThisSession: this.handsPlayedThisSession,
+      handsToday,
+      maxHandsPerDay: this.maxHandsPerDay
+    });
     if (handsToday >= this.maxHandsPerDay) {
       this.emit({ type: "HAND_LIMIT_REACHED", handsToday, maxHandsPerDay: this.maxHandsPerDay });
       this.onHandLimitReached?.(handsToday, this.maxHandsPerDay);
@@ -1960,7 +1964,14 @@ var DEBUG_WORTHY_TYPES = /* @__PURE__ */ new Set([
   "KILLING_STALE_LISTENER",
   "GW_CONNECT_FAILED",
   "SSE_OPEN",
-  "SSE_CONNECTED"
+  "SSE_CONNECTED",
+  // Hand cap & pacing observability
+  "HAND_CAP_CONFIG",
+  "HAND_LIMIT_BASELINE",
+  "HAND_LIMIT_REACHED",
+  "HEARTBEAT_STARTUP_FAILED",
+  "SESSION_LIMIT_REACHED",
+  "PAUSED_DETECTED"
 ]);
 var lockFilePath = null;
 async function acquirePidLock(lockFile, emitFn) {
@@ -2004,25 +2015,19 @@ function isBeingReplaced(lockFile) {
 var CHANNEL_ALIASES = /* @__PURE__ */ new Set(["--channel"]);
 var CHAT_ID_ALIASES = /* @__PURE__ */ new Set(["--chat-id", "--target", "--to"]);
 var ACCOUNT_ALIASES = /* @__PURE__ */ new Set(["--account"]);
-var MODE_ALIASES = /* @__PURE__ */ new Set(["--mode"]);
 function parseDirectArgs(argv) {
   let channel = null;
   let chatId = null;
   let account = null;
   let debugFlag = false;
-  let mode = null;
   for (let i = 0; i < argv.length; i++) {
     if (CHANNEL_ALIASES.has(argv[i]) && argv[i + 1]) channel = argv[i + 1];
     if (CHAT_ID_ALIASES.has(argv[i]) && argv[i + 1]) chatId = argv[i + 1];
     if (ACCOUNT_ALIASES.has(argv[i]) && argv[i + 1]) account = argv[i + 1];
-    if (MODE_ALIASES.has(argv[i]) && argv[i + 1]) {
-      const m = argv[i + 1];
-      mode = m === "game" ? "game" : "lobby";
-    }
     if (argv[i] === "--debug") debugFlag = true;
   }
   const enabled = !!(channel && chatId);
-  return { enabled, channel, chatId, account, debug: debugFlag, mode };
+  return { enabled, channel, chatId, account, debug: debugFlag };
 }
 function persistLaunchArgs(configPath, channel, chatId, account) {
   if (channel === "heartbeat") return;
@@ -2138,8 +2143,11 @@ function runUnifiedMode(config) {
     session.onFatalDecisionFailure = (reason) => {
       void onGameEnd(reason, true);
     };
+    let handCapReached = false;
     session.onHandLimitReached = (handsToday, max) => {
-      fatalExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`);
+      handCapReached = true;
+      emit({ type: "HAND_LIMIT_REACHED", handsToday, maxHandsPerDay: max });
+      void onGameEnd(`Daily hand limit reached (${handsToday}/${max})`);
     };
     session.onPausedDetected = () => {
       fatalExit("PAUSED: Agent paused by owner");
@@ -2179,6 +2187,16 @@ function runUnifiedMode(config) {
         try {
           const data = JSON.parse(event.data);
           if (!inGame) {
+            if (handCapReached) {
+              emit({ type: "HAND_CAP_REJECT_GAME", gameId: data.gameId });
+              fetch(`${backendUrl}/api/me/game/leave`, {
+                method: "POST",
+                headers: { "x-api-key": apiKey },
+                signal: AbortSignal.timeout(3e3)
+              }).catch(() => {
+              });
+              return;
+            }
             inGame = true;
             emit({ type: "GAME_STARTED", gameId: data.gameId });
           }
@@ -2276,172 +2294,6 @@ function runUnifiedMode(config) {
     }
   });
 }
-function runGameMode(config) {
-  const { backendUrl, apiKey, session, EventSourceClass, gatewayClient } = config;
-  const sseUrl = `${backendUrl}/api/me/game/stream?token=${apiKey}`;
-  return new Promise((resolve) => {
-    const context = { prevState: null, prevPhase: null, lastActionType: null, lastReportedHand: 0, lastTurnKey: null };
-    let es;
-    const HEARTBEAT_TIMEOUT_MS = 9e4;
-    const RECONNECT_BASE_DELAY_MS = 3e3;
-    const RECONNECT_MAX_DELAY_MS = 6e4;
-    const RECONNECT_GIVE_UP_MS = 30 * 6e4;
-    let reconnectingSince = null;
-    let heartbeatCheckRunning = false;
-    const heartbeatCheck = setInterval(async () => {
-      if (heartbeatCheckRunning) return;
-      if (Date.now() - session.lastEventTime > HEARTBEAT_TIMEOUT_MS) {
-        heartbeatCheckRunning = true;
-        try {
-          emit({ type: "HEARTBEAT_TIMEOUT", lastEventAge: Date.now() - session.lastEventTime });
-          try {
-            const resp = await fetch(`${backendUrl}/api/me/game`, {
-              headers: { "x-api-key": apiKey },
-              signal: AbortSignal.timeout(5e3)
-            });
-            if (!resp.ok) {
-              emit({ type: "STATUS_CHECK", status: resp.status });
-              gracefulExit("Left the table", 0);
-              return;
-            }
-          } catch {
-          }
-          if (reconnectingSince === null) reconnectingSince = Date.now();
-          if (Date.now() - reconnectingSince > RECONNECT_GIVE_UP_MS) {
-            gracefulExit(`Connection lost after ${Math.round((Date.now() - reconnectingSince) / 6e4)}min of reconnecting`, 1);
-          } else {
-            session.reconnectAttempts++;
-            const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (session.reconnectAttempts - 1), RECONNECT_MAX_DELAY_MS);
-            emit({ type: "SSE_RECONNECT_ATTEMPT", attempt: session.reconnectAttempts, delayMs: delay });
-            es.close();
-            setTimeout(() => connectSSE(), delay);
-          }
-        } finally {
-          heartbeatCheckRunning = false;
-        }
-      } else if (Date.now() - session.lastStateEventTime > HEARTBEAT_TIMEOUT_MS) {
-        heartbeatCheckRunning = true;
-        try {
-          emit({ type: "STATE_SILENCE_DETECTED", lastStateAge: Date.now() - session.lastStateEventTime });
-          try {
-            const resp = await fetch(`${backendUrl}/api/me/game`, {
-              headers: { "x-api-key": apiKey },
-              signal: AbortSignal.timeout(5e3)
-            });
-            if (!resp.ok) {
-              emit({ type: "STATUS_CHECK", status: resp.status });
-              gracefulExit("Left the table", 0);
-              return;
-            }
-            session.lastStateEventTime = Date.now();
-          } catch {
-          }
-        } finally {
-          heartbeatCheckRunning = false;
-        }
-      }
-    }, 15e3);
-    let exitInProgress = false;
-    function gracefulExit(reason, exitCode) {
-      if (exitInProgress) return;
-      exitInProgress = true;
-      clearInterval(heartbeatCheck);
-      const isRebuyState = exitCode !== 0 && context.prevState?.canRebuy === true && context.prevState?.yourChips === 0;
-      const finalStack = context.prevState?.yourChips ?? "unknown";
-      if (reason !== "Table closed" && !isRebuyState && !isBeingReplaced(lockFilePath)) {
-        fetch(`${backendUrl}/api/me/game/leave`, {
-          method: "POST",
-          headers: { "x-api-key": apiKey },
-          signal: AbortSignal.timeout(3e3)
-        }).catch(() => {
-        });
-      } else if (reason !== "Table closed" && !isRebuyState) {
-        emit({ type: "SKIP_LEAVE_REPLACED" });
-      }
-      if (isRebuyState) {
-        es?.close();
-        resolve();
-        return;
-      }
-      const reflectionStats = session.getReflectionStats();
-      const notifyDone = exitCode === 0 ? session.notifyAgent(controlSignals.gameOver(session.gameId, reason, finalStack, reflectionStats)) : session.notifyAgent(controlSignals.connectionError(session.gameId, reason, finalStack, reflectionStats));
-      notifyDone.then(() => {
-        const cliPath = join4(SKILL_ROOT, "dist", "clawplay-cli.js");
-        execFile2("node", [cliPath, "cleanup-sessions"], { timeout: 15e3 }, (err, stdout) => {
-          if (stdout) {
-            try {
-              emit({ type: "SESSIONS_CLEANUP", ...JSON.parse(stdout) });
-            } catch {
-            }
-          }
-          if (err) emit({ type: "SESSIONS_CLEANUP_ERROR", error: String(err) });
-        });
-        es?.close();
-        resolve();
-      });
-      const forceExit = setTimeout(() => {
-        es?.close();
-        resolve();
-      }, 3e4);
-      forceExit.unref();
-    }
-    session.onFatalDecisionFailure = (reason) => gracefulExit(reason, 1);
-    session.onHandLimitReached = (handsToday, max) => gracefulExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`, 0);
-    session.onPausedDetected = () => gracefulExit("PAUSED: Agent paused by owner", 0);
-    function connectSSE() {
-      if (es) es.close();
-      es = new EventSourceClass(sseUrl);
-      session.lastEventTime = Date.now();
-      session.lastStateEventTime = Date.now();
-      es.onopen = () => {
-        session.onSSEOpen();
-      };
-      es.addEventListener("state", (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          session.handleStateEvent(data, context, gracefulExit);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          emit({ type: "CONNECTION_ERROR", error: `Failed to process state event: ${msg}` });
-          gracefulExit(`State parse error: ${msg}`, 1);
-        }
-      });
-      es.addEventListener("keepalive", () => {
-        session.lastEventTime = Date.now();
-        session.reconnectAttempts = 0;
-        if (reconnectingSince !== null) {
-          emit({ type: "SSE_RECONNECTED", downtime: Math.round((Date.now() - reconnectingSince) / 1e3) });
-          reconnectingSince = null;
-        }
-      });
-      es.addEventListener("closed", () => {
-        session.lastEventTime = Date.now();
-        gracefulExit("Table closed", 0);
-      });
-      es.onerror = (err) => {
-        const msg = "message" in err ? err.message : "unknown";
-        emit({ type: "CONNECTION_ERROR", error: `SSE connection error: ${msg || "unknown"}` });
-      };
-    }
-    connectSSE();
-    if (!config.skipSignalHandlers) {
-      for (const signal of ["SIGTERM", "SIGINT"]) {
-        process.on(signal, () => {
-          emit({ type: "SIGNAL_EXIT", signal });
-          if (!isBeingReplaced(lockFilePath)) {
-            session.notifyAgentSilent(
-              controlSignals.connectionError(session.gameId, `Listener killed (${signal})`, context.prevState?.yourChips ?? "unknown", session.getReflectionStats())
-            ).catch(() => {
-            });
-          }
-          gatewayClient.stop();
-          debugStream?.end();
-          gracefulExit("Session terminated", 0);
-        });
-      }
-    }
-  });
-}
 async function main() {
   const backendUrl = "https://api.clawplay.fun";
   const config = readClawPlayConfig();
@@ -2474,7 +2326,6 @@ async function main() {
   process.on("exit", () => {
     if (lockFilePath) releasePidLock(lockFilePath);
   });
-  const listenerMode = direct.mode ?? config.listenerMode ?? "lobby";
   const reflectEveryNHands = config.reflectEveryNHands ?? 3;
   const startupVersion = readLocalVersion();
   let personalityContext = "";
@@ -2528,6 +2379,7 @@ ${content}`;
   if (typeof config.maxHandsPerDay === "number" && config.maxHandsPerDay > 0) {
     session.maxHandsPerDay = config.maxHandsPerDay;
   }
+  emit({ type: "HAND_CAP_CONFIG", maxHandsPerDay: session.maxHandsPerDay });
   try {
     const hbResp = await fetch(`${backendUrl}/api/lobby/heartbeat`, {
       headers: { "x-api-key": apiKey },
@@ -2572,13 +2424,8 @@ Daily session limit reached (${hb.sessionsToday}/${config.maxSessionsPerDay}). T
       else debug("GW_STARTUP_EXHAUSTED", { attempts: 5 });
     }
   }
-  if (listenerMode !== "game") {
-    emit({ type: "MODE", mode: "lobby" });
-    await runUnifiedMode({ backendUrl, apiKey, session, EventSourceClass, gatewayClient, startupVersion });
-    return;
-  }
-  emit({ type: "MODE", mode: "game" });
-  await runGameMode({ backendUrl, apiKey, session, EventSourceClass, gatewayClient });
+  emit({ type: "MODE", mode: "lobby" });
+  await runUnifiedMode({ backendUrl, apiKey, session, EventSourceClass, gatewayClient, startupVersion });
 }
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");

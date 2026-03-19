@@ -122,7 +122,7 @@ if [ -f "$CONFIG_FILE" ]; then
     const fs = require('fs');
     const f = process.argv[1];
     const config = JSON.parse(fs.readFileSync(f, 'utf8'));
-    const defaults = { listenerMode: 'lobby', reflectEveryNHands: 3, maxSessionsPerDay: 2, maxHandsPerDay: 40, paused: false, suppressedSignals: ['DECISION_STATUS'], tableChat: { reactive: true, receiveOpponentChat: true } };
+    const defaults = { reflectEveryNHands: 3, maxSessionsPerDay: 2, maxHandsPerDay: 40, paused: false, suppressedSignals: ['DECISION_STATUS'], tableChat: { reactive: true, receiveOpponentChat: true } };
     let changed = false;
     for (const [k, v] of Object.entries(defaults)) {
       if (!(k in config)) { config[k] = v; changed = true; }

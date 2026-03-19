@@ -571,3 +571,136 @@ describe('Integration: decision stale hand detection', () => {
     expect(notifyCalls.some(c => c.includes('Hand moved on'))).toBe(true);
   });
 });
+
+// ── Hand cap enforcement ──────────────────────────────────────────────
+
+describe('Integration: hand cap enforcement', () => {
+  it('fires onHandLimitReached after maxHandsPerDay hands complete', () => {
+    const mockGw = makeMockGatewayClient('{"action":"check","narration":"I check."}');
+    const { session, emitted, debugLog } = makeIntegrationSession({
+      backendUrl: 'http://localhost:0',
+      gatewayClient: mockGw,
+    });
+
+    // Set a low hand cap
+    session.maxHandsPerDay = 3;
+    session.handsAtSessionStart = 0;
+
+    let limitReachedArgs: { handsToday: number; max: number } | null = null;
+    session.onHandLimitReached = (handsToday, max) => {
+      limitReachedArgs = { handsToday, max };
+    };
+
+    const context: ListenerContext = { prevState: null, prevPhase: null, lastActionType: null, lastReportedHand: 0, lastTurnKey: null };
+
+    // Play 3 hands — each hand: preflop → showdown with result → next preflop
+    for (let hand = 1; hand <= 3; hand++) {
+      const preflop = makeView({
+        gameId: 'cap-test',
+        handNumber: hand,
+        phase: 'PREFLOP',
+        isYourTurn: false,
+        yourCards: ['As', 'Kh'],
+        yourChips: 1000,
+        pot: 30,
+      });
+      session.handleStateEvent(preflop, context, () => {});
+
+      const showdown = makeView({
+        gameId: 'cap-test',
+        handNumber: hand,
+        phase: 'SHOWDOWN',
+        isYourTurn: false,
+        yourCards: ['As', 'Kh'],
+        yourChips: 1050,
+        pot: 0,
+        boardCards: ['Ah', '7c', '2d', 'Kd', '3s'],
+        lastHandResult: {
+          winners: [0],
+          players: [
+            { userId: 'hero', seat: 0, name: 'Hero', chips: 1050 },
+            { userId: 'opp', seat: 1, name: 'Opp', chips: 950 },
+          ],
+          potResults: [{ winners: [0], amount: 100 }],
+        },
+      });
+      session.handleStateEvent(showdown, context, () => {});
+
+      // Transition to next hand preflop to trigger HAND_RESULT
+      const nextPreflop = makeView({
+        gameId: 'cap-test',
+        handNumber: hand + 1,
+        phase: 'PREFLOP',
+        isYourTurn: false,
+        yourCards: ['Tc', '9d'],
+        yourChips: 1050,
+        pot: 30,
+      });
+      session.handleStateEvent(nextPreflop, context, () => {});
+    }
+
+    // Verify hand cap check debug entries appeared
+    const capChecks = debugLog.filter(d => d.label === 'HAND_CAP_CHECK');
+    expect(capChecks.length).toBeGreaterThanOrEqual(3);
+
+    // Verify HAND_LIMIT_REACHED was emitted
+    const limitEvents = emitted.filter(e => e.type === 'HAND_LIMIT_REACHED');
+    expect(limitEvents.length).toBe(1);
+    expect(limitEvents[0].handsToday).toBe(3);
+    expect(limitEvents[0].maxHandsPerDay).toBe(3);
+
+    // Verify callback was called
+    expect(limitReachedArgs).toEqual({ handsToday: 3, max: 3 });
+  });
+
+  it('does not fire onHandLimitReached when under the cap', () => {
+    const mockGw = makeMockGatewayClient('{"action":"check","narration":"I check."}');
+    const { session, emitted } = makeIntegrationSession({
+      backendUrl: 'http://localhost:0',
+      gatewayClient: mockGw,
+    });
+
+    session.maxHandsPerDay = 10;
+    session.handsAtSessionStart = 0;
+
+    let limitReached = false;
+    session.onHandLimitReached = () => { limitReached = true; };
+
+    const context: ListenerContext = { prevState: null, prevPhase: null, lastActionType: null, lastReportedHand: 0, lastTurnKey: null };
+
+    // Play 2 hands
+    for (let hand = 1; hand <= 2; hand++) {
+      session.handleStateEvent(makeView({ gameId: 'cap-test', handNumber: hand, phase: 'PREFLOP', isYourTurn: false, yourCards: ['As', 'Kh'], yourChips: 1000, pot: 30 }), context, () => {});
+      session.handleStateEvent(makeView({ gameId: 'cap-test', handNumber: hand, phase: 'SHOWDOWN', isYourTurn: false, yourCards: ['As', 'Kh'], yourChips: 1050, pot: 0, boardCards: ['Ah', '7c', '2d', 'Kd', '3s'], lastHandResult: { winners: [0], players: [{ userId: 'hero', seat: 0, name: 'Hero', chips: 1050 }, { userId: 'opp', seat: 1, name: 'Opp', chips: 950 }], potResults: [{ winners: [0], amount: 100 }] } }), context, () => {});
+      session.handleStateEvent(makeView({ gameId: 'cap-test', handNumber: hand + 1, phase: 'PREFLOP', isYourTurn: false, yourCards: ['Tc', '9d'], yourChips: 1050, pot: 30 }), context, () => {});
+    }
+
+    expect(limitReached).toBe(false);
+    expect(emitted.filter(e => e.type === 'HAND_LIMIT_REACHED').length).toBe(0);
+  });
+
+  it('accounts for handsAtSessionStart in cap calculation', () => {
+    const mockGw = makeMockGatewayClient('{"action":"check","narration":"I check."}');
+    const { session } = makeIntegrationSession({
+      backendUrl: 'http://localhost:0',
+      gatewayClient: mockGw,
+    });
+
+    session.maxHandsPerDay = 5;
+    session.handsAtSessionStart = 4; // Already played 4 today
+
+    let limitReachedArgs: { handsToday: number; max: number } | null = null;
+    session.onHandLimitReached = (handsToday, max) => {
+      limitReachedArgs = { handsToday, max };
+    };
+
+    const context: ListenerContext = { prevState: null, prevPhase: null, lastActionType: null, lastReportedHand: 0, lastTurnKey: null };
+
+    // Play just 1 hand — should trigger cap (4 baseline + 1 = 5 >= 5)
+    session.handleStateEvent(makeView({ gameId: 'cap-test', handNumber: 1, phase: 'PREFLOP', isYourTurn: false, yourCards: ['As', 'Kh'], yourChips: 1000, pot: 30 }), context, () => {});
+    session.handleStateEvent(makeView({ gameId: 'cap-test', handNumber: 1, phase: 'SHOWDOWN', isYourTurn: false, yourCards: ['As', 'Kh'], yourChips: 1050, pot: 0, boardCards: ['Ah', '7c', '2d', 'Kd', '3s'], lastHandResult: { winners: [0], players: [{ userId: 'hero', seat: 0, name: 'Hero', chips: 1050 }, { userId: 'opp', seat: 1, name: 'Opp', chips: 950 }], potResults: [{ winners: [0], amount: 100 }] } }), context, () => {});
+    session.handleStateEvent(makeView({ gameId: 'cap-test', handNumber: 2, phase: 'PREFLOP', isYourTurn: false, yourCards: ['Tc', '9d'], yourChips: 1050, pot: 30 }), context, () => {});
+
+    expect(limitReachedArgs).toEqual({ handsToday: 5, max: 5 });
+  });
+});

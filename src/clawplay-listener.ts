@@ -43,6 +43,9 @@ const DEBUG_WORTHY_TYPES = new Set([
   'GAME_STARTED', 'GAME_ENDED', 'VERSION_STALE', 'MODE', 'DELIVERY_MODE',
   'KILLING_STALE_LISTENER', 'GW_CONNECT_FAILED',
   'SSE_OPEN', 'SSE_CONNECTED',
+  // Hand cap & pacing observability
+  'HAND_CAP_CONFIG', 'HAND_LIMIT_BASELINE', 'HAND_LIMIT_REACHED',
+  'HEARTBEAT_STARTUP_FAILED', 'SESSION_LIMIT_REACHED', 'PAUSED_DETECTED',
 ]);
 
 // ── PID lock ─────────────────────────────────────────────────────────
@@ -102,28 +105,21 @@ const CHANNEL_ALIASES = new Set(['--channel']);
 const CHAT_ID_ALIASES = new Set(['--chat-id', '--target', '--to']);
 const ACCOUNT_ALIASES = new Set(['--account']);
 
-const MODE_ALIASES = new Set(['--mode']);
-
-export function parseDirectArgs(argv: string[]): { enabled: boolean; channel: string | null; chatId: string | null; account: string | null; debug: boolean; mode: 'game' | 'lobby' | null } {
+export function parseDirectArgs(argv: string[]): { enabled: boolean; channel: string | null; chatId: string | null; account: string | null; debug: boolean } {
   let channel: string | null = null;
   let chatId: string | null = null;
   let account: string | null = null;
   let debugFlag = false;
-  let mode: 'game' | 'lobby' | null = null;
 
   for (let i = 0; i < argv.length; i++) {
     if (CHANNEL_ALIASES.has(argv[i]) && argv[i + 1]) channel = argv[i + 1];
     if (CHAT_ID_ALIASES.has(argv[i]) && argv[i + 1]) chatId = argv[i + 1];
     if (ACCOUNT_ALIASES.has(argv[i]) && argv[i + 1]) account = argv[i + 1];
-    if (MODE_ALIASES.has(argv[i]) && argv[i + 1]) {
-      const m = argv[i + 1];
-      mode = m === 'game' ? 'game' : 'lobby';
-    }
     if (argv[i] === '--debug') debugFlag = true;
   }
 
   const enabled = !!(channel && chatId);
-  return { enabled, channel, chatId, account, debug: debugFlag, mode };
+  return { enabled, channel, chatId, account, debug: debugFlag };
 }
 
 // ── Launch args persistence ──────────────────────────────────────────
@@ -295,11 +291,13 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
       void onGameEnd(reason, true);
     };
 
-    // Wire up hand cap + pause handlers — use fatalExit (not onGameEnd)
-    // because hitting the daily cap should stop the entire listener,
-    // not just end the current game and loop back to lobby.
+    // Wire up hand cap handler — leave the game gracefully but keep the listener alive.
+    // The listener stays in lobby mode with handCapReached=true and won't join new games.
+    let handCapReached = false;
     session.onHandLimitReached = (handsToday: number, max: number) => {
-      fatalExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`);
+      handCapReached = true;
+      emit({ type: 'HAND_LIMIT_REACHED', handsToday, maxHandsPerDay: max });
+      void onGameEnd(`Daily hand limit reached (${handsToday}/${max})`);
     };
     session.onPausedDetected = () => {
       fatalExit('PAUSED: Agent paused by owner');
@@ -347,6 +345,16 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
         try {
           const data = JSON.parse(event.data);
           if (!inGame) {
+            if (handCapReached) {
+              // Daily cap reached — leave any new game immediately, stay in lobby
+              emit({ type: 'HAND_CAP_REJECT_GAME', gameId: data.gameId });
+              fetch(`${backendUrl}/api/me/game/leave`, {
+                method: 'POST',
+                headers: { 'x-api-key': apiKey },
+                signal: AbortSignal.timeout(3000),
+              }).catch(() => {});
+              return;
+            }
             inGame = true;
             emit({ type: 'GAME_STARTED', gameId: data.gameId });
           }
@@ -454,286 +462,6 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
   });
 }
 
-// ── Legacy lobby mode SSE (kept for --mode lobby backwards compat) ───
-
-interface LobbyModeConfig {
-  backendUrl: string;
-  apiKey: string;
-  session: GameSession;
-  EventSourceClass: new (url: string) => EventSource;
-}
-
-function runLobbyMode(config: LobbyModeConfig): Promise<void> {
-  const { backendUrl, apiKey, session, EventSourceClass } = config;
-  const sseUrl = `${backendUrl}/api/lobby/stream?token=${apiKey}`;
-
-  return new Promise<void>((resolve) => {
-    emit({ type: 'LOBBY_MODE_START' });
-    const es = new EventSourceClass(sseUrl);
-    let lastEventTime = Date.now();
-
-    const statusPoll = setInterval(async () => {
-      try {
-        const resp = await fetch(`${backendUrl}/api/lobby/status`, {
-          headers: { 'x-api-key': apiKey },
-          signal: AbortSignal.timeout(5_000),
-        });
-        if (resp.ok) {
-          const data = await resp.json() as { status: string };
-          if (data.status === 'playing') {
-            emit({ type: 'LOBBY_GAME_DETECTED' });
-            clearInterval(statusPoll);
-            es.close();
-            resolve();
-          }
-        }
-      } catch {}
-    }, 30_000);
-
-    const lobbyHeartbeat = setInterval(() => {
-      if (Date.now() - lastEventTime > 120_000) {
-        emit({ type: 'LOBBY_HEARTBEAT_TIMEOUT' });
-        clearInterval(lobbyHeartbeat);
-        clearInterval(statusPoll);
-        es.close();
-        resolve();
-      }
-    }, 15_000);
-
-    es.addEventListener('invite', (event: MessageEvent) => {
-      lastEventTime = Date.now();
-      try {
-        const data = JSON.parse(event.data);
-        emit({ type: 'LOBBY_INVITE_RECEIVED', data });
-        session.notifyAgent(
-          controlSignals.inviteReceived(data.inviterName, data.gameMode, data.inviteId, data.tableId),
-        ).catch(() => {});
-      } catch {
-        emit({ type: 'LOBBY_EVENT_PARSE_ERROR', raw: event.data });
-      }
-    });
-
-    es.addEventListener('follow', (event: MessageEvent) => {
-      lastEventTime = Date.now();
-      try {
-        const data = JSON.parse(event.data);
-        emit({ type: 'LOBBY_FOLLOW_RECEIVED', data });
-        session.notifyAgentSilent(controlSignals.newFollower(data.followerName)).catch(() => {});
-      } catch {
-        emit({ type: 'LOBBY_EVENT_PARSE_ERROR', raw: event.data });
-      }
-    });
-
-    es.addEventListener('keepalive', () => {
-      lastEventTime = Date.now();
-    });
-
-    es.onerror = () => {
-      emit({ type: 'LOBBY_SSE_ERROR' });
-    };
-  });
-}
-
-// ── Legacy game mode (kept for --mode game backwards compat) ────────
-
-interface GameModeConfig {
-  backendUrl: string;
-  apiKey: string;
-  session: GameSession;
-  EventSourceClass: new (url: string) => EventSource;
-  gatewayClient: GatewayWsClient;
-  skipSignalHandlers?: boolean;
-}
-
-function runGameMode(config: GameModeConfig): Promise<void> {
-  const { backendUrl, apiKey, session, EventSourceClass, gatewayClient } = config;
-  const sseUrl = `${backendUrl}/api/me/game/stream?token=${apiKey}`;
-
-  return new Promise<void>((resolve) => {
-    const context: ListenerContext = { prevState: null, prevPhase: null, lastActionType: null, lastReportedHand: 0, lastTurnKey: null };
-    let es: EventSource;
-    const HEARTBEAT_TIMEOUT_MS = 90_000;
-    const RECONNECT_BASE_DELAY_MS = 3_000;
-    const RECONNECT_MAX_DELAY_MS = 60_000;     // Cap at 1 min between attempts
-    const RECONNECT_GIVE_UP_MS = 30 * 60_000;  // 30 min continuous failure → exit
-    let reconnectingSince: number | null = null;
-
-    let heartbeatCheckRunning = false;
-    const heartbeatCheck = setInterval(async () => {
-      if (heartbeatCheckRunning) return;
-      if (Date.now() - session.lastEventTime > HEARTBEAT_TIMEOUT_MS) {
-        heartbeatCheckRunning = true;
-        try {
-          emit({ type: 'HEARTBEAT_TIMEOUT', lastEventAge: Date.now() - session.lastEventTime });
-
-          try {
-            const resp = await fetch(`${backendUrl}/api/me/game`, {
-              headers: { 'x-api-key': apiKey },
-              signal: AbortSignal.timeout(5_000),
-            });
-            if (!resp.ok) {
-              emit({ type: 'STATUS_CHECK', status: resp.status });
-              gracefulExit('Left the table', 0);
-              return;
-            }
-          } catch {}
-
-          if (reconnectingSince === null) reconnectingSince = Date.now();
-
-          if (Date.now() - reconnectingSince > RECONNECT_GIVE_UP_MS) {
-            gracefulExit(`Connection lost after ${Math.round((Date.now() - reconnectingSince) / 60_000)}min of reconnecting`, 1);
-          } else {
-            session.reconnectAttempts++;
-            const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (session.reconnectAttempts - 1), RECONNECT_MAX_DELAY_MS);
-            emit({ type: 'SSE_RECONNECT_ATTEMPT', attempt: session.reconnectAttempts, delayMs: delay });
-            es.close();
-            setTimeout(() => connectSSE(), delay);
-          }
-        } finally {
-          heartbeatCheckRunning = false;
-        }
-      }
-      else if (Date.now() - session.lastStateEventTime > HEARTBEAT_TIMEOUT_MS) {
-        heartbeatCheckRunning = true;
-        try {
-          emit({ type: 'STATE_SILENCE_DETECTED', lastStateAge: Date.now() - session.lastStateEventTime });
-          try {
-            const resp = await fetch(`${backendUrl}/api/me/game`, {
-              headers: { 'x-api-key': apiKey },
-              signal: AbortSignal.timeout(5_000),
-            });
-            if (!resp.ok) {
-              emit({ type: 'STATUS_CHECK', status: resp.status });
-              gracefulExit('Left the table', 0);
-              return;
-            }
-            session.lastStateEventTime = Date.now();
-          } catch {}
-        } finally {
-          heartbeatCheckRunning = false;
-        }
-      }
-    }, 15_000);
-
-    let exitInProgress = false;
-
-    function gracefulExit(reason: string, exitCode: number): void {
-      if (exitInProgress) return;
-      exitInProgress = true;
-      clearInterval(heartbeatCheck);
-
-      const isRebuyState = exitCode !== 0
-        && context.prevState?.canRebuy === true
-        && context.prevState?.yourChips === 0;
-
-      const finalStack = context.prevState?.yourChips ?? 'unknown';
-
-      if (reason !== 'Table closed' && !isRebuyState && !isBeingReplaced(lockFilePath)) {
-        fetch(`${backendUrl}/api/me/game/leave`, {
-          method: 'POST',
-          headers: { 'x-api-key': apiKey },
-          signal: AbortSignal.timeout(3000),
-        }).catch(() => {});
-      } else if (reason !== 'Table closed' && !isRebuyState) {
-        emit({ type: 'SKIP_LEAVE_REPLACED' });
-      }
-
-      if (isRebuyState) {
-        es?.close();
-        resolve();
-        return;
-      }
-
-      const reflectionStats = session.getReflectionStats();
-      const notifyDone = exitCode === 0
-        ? session.notifyAgent(controlSignals.gameOver(session.gameId, reason, finalStack, reflectionStats))
-        : session.notifyAgent(controlSignals.connectionError(session.gameId, reason, finalStack, reflectionStats));
-
-      notifyDone.then(() => {
-        // Fire-and-forget: clean up poker session entries from OpenClaw session store
-        const cliPath = join(SKILL_ROOT, 'dist', 'clawplay-cli.js');
-        execFile('node', [cliPath, 'cleanup-sessions'], { timeout: 15_000 }, (err, stdout) => {
-          if (stdout) {
-            try { emit({ type: 'SESSIONS_CLEANUP', ...JSON.parse(stdout) }); } catch { /* ignore */ }
-          }
-          if (err) emit({ type: 'SESSIONS_CLEANUP_ERROR', error: String(err) });
-        });
-        es?.close();
-        resolve();
-      });
-
-      const forceExit = setTimeout(() => { es?.close(); resolve(); }, 30_000);
-      forceExit.unref();
-    }
-
-    session.onFatalDecisionFailure = (reason: string) => gracefulExit(reason, 1);
-    session.onHandLimitReached = (handsToday: number, max: number) =>
-      gracefulExit(`HAND_LIMIT_REACHED: Daily hand limit reached (${handsToday}/${max})`, 0);
-    session.onPausedDetected = () =>
-      gracefulExit('PAUSED: Agent paused by owner', 0);
-
-    function connectSSE(): void {
-      if (es) es.close();
-      es = new EventSourceClass(sseUrl);
-      session.lastEventTime = Date.now();
-      session.lastStateEventTime = Date.now();
-
-      es.onopen = () => {
-        session.onSSEOpen();
-      };
-
-      es.addEventListener('state', (event: MessageEvent) => {
-        try {
-          const data = JSON.parse(event.data);
-          session.handleStateEvent(data, context, gracefulExit);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          emit({ type: 'CONNECTION_ERROR', error: `Failed to process state event: ${msg}` });
-          gracefulExit(`State parse error: ${msg}`, 1);
-        }
-      });
-
-      es.addEventListener('keepalive', () => {
-        session.lastEventTime = Date.now();
-        session.reconnectAttempts = 0;
-        if (reconnectingSince !== null) {
-          emit({ type: 'SSE_RECONNECTED', downtime: Math.round((Date.now() - reconnectingSince) / 1000) });
-          reconnectingSince = null;
-        }
-      });
-
-      es.addEventListener('closed', () => {
-        session.lastEventTime = Date.now();
-        gracefulExit('Table closed', 0);
-      });
-
-      es.onerror = (err: Event) => {
-        const msg = 'message' in err ? (err as { message?: string }).message : 'unknown';
-        emit({ type: 'CONNECTION_ERROR', error: `SSE connection error: ${msg || 'unknown'}` });
-      };
-    }
-
-    connectSSE();
-
-    if (!config.skipSignalHandlers) {
-      for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-        process.on(signal, () => {
-          emit({ type: 'SIGNAL_EXIT', signal });
-          // Best-effort notify the main agent that the listener died
-          if (!isBeingReplaced(lockFilePath)) {
-            session.notifyAgentSilent(
-              controlSignals.connectionError(session.gameId, `Listener killed (${signal})`, context.prevState?.yourChips ?? 'unknown', session.getReflectionStats()),
-            ).catch(() => {});
-          }
-          gatewayClient.stop();
-          debugStream?.end();
-          gracefulExit('Session terminated', 0);
-        });
-      }
-    }
-  });
-}
-
 // ── Main ─────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -775,7 +503,6 @@ async function main(): Promise<void> {
   await acquirePidLock(lockFilePath, emit);
   process.on('exit', () => { if (lockFilePath) releasePidLock(lockFilePath); });
 
-  const listenerMode = direct.mode ?? config.listenerMode ?? 'lobby';
   const reflectEveryNHands = config.reflectEveryNHands ?? 3;
   const startupVersion = readLocalVersion();
 
@@ -836,6 +563,7 @@ async function main(): Promise<void> {
   if (typeof config.maxHandsPerDay === 'number' && config.maxHandsPerDay > 0) {
     session.maxHandsPerDay = config.maxHandsPerDay;
   }
+  emit({ type: 'HAND_CAP_CONFIG', maxHandsPerDay: session.maxHandsPerDay });
 
   // Fetch heartbeat at startup — needed for hand limit baseline and session limit check
   try {
@@ -893,16 +621,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // ── Lobby mode (default) ────────────────────────────────────────
-  if (listenerMode !== 'game') {
-    emit({ type: 'MODE', mode: 'lobby' });
-    await runUnifiedMode({ backendUrl, apiKey, session, EventSourceClass, gatewayClient, startupVersion });
-    return;
-  }
-
-  // ── Legacy game mode ──────────────────────────────────────────────
-  emit({ type: 'MODE', mode: 'game' });
-  await runGameMode({ backendUrl, apiKey, session, EventSourceClass, gatewayClient });
+  emit({ type: 'MODE', mode: 'lobby' });
+  await runUnifiedMode({ backendUrl, apiKey, session, EventSourceClass, gatewayClient, startupVersion });
 }
 
 function emit(obj: Record<string, unknown> | ListenerOutput): void {

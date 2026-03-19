@@ -491,6 +491,12 @@ export class GameSession {
   private checkHandCap(): void {
     if (this.maxHandsPerDay == null) return;
     const handsToday = this.handsAtSessionStart + this.handsPlayedThisSession;
+    this.debug('HAND_CAP_CHECK', {
+      handsAtSessionStart: this.handsAtSessionStart,
+      handsPlayedThisSession: this.handsPlayedThisSession,
+      handsToday,
+      maxHandsPerDay: this.maxHandsPerDay,
+    });
     if (handsToday >= this.maxHandsPerDay) {
       this.emit({ type: 'HAND_LIMIT_REACHED', handsToday, maxHandsPerDay: this.maxHandsPerDay });
       this.onHandLimitReached?.(handsToday, this.maxHandsPerDay);

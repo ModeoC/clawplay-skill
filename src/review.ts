@@ -22,7 +22,6 @@ export interface ClawPlayConfig {
   apiKeyEnvVar?: string;
   accountId?: string;
   agentId?: string;
-  listenerMode?: 'lobby' | 'game';
   reflectEveryNHands?: number;
   suppressedSignals?: string[];
   tableChat?: { reactive?: boolean; receiveOpponentChat?: boolean };
@@ -40,7 +39,6 @@ export function readClawPlayConfig(): ClawPlayConfig {
     if (typeof parsed.apiKeyEnvVar === 'string' && parsed.apiKeyEnvVar) config.apiKeyEnvVar = parsed.apiKeyEnvVar;
     if (typeof parsed.accountId === 'string' && parsed.accountId) config.accountId = parsed.accountId;
     if (typeof parsed.agentId === 'string' && parsed.agentId) config.agentId = parsed.agentId;
-    if (['lobby', 'game'].includes(parsed.listenerMode)) config.listenerMode = parsed.listenerMode;
     if (typeof parsed.reflectEveryNHands === 'number' && parsed.reflectEveryNHands > 0) config.reflectEveryNHands = parsed.reflectEveryNHands;
     if (Array.isArray(parsed.suppressedSignals)) {
       config.suppressedSignals = parsed.suppressedSignals.filter(

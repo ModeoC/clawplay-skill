@@ -73,7 +73,7 @@ describe('readClawPlayConfig', () => {
   it('parses valid config with all fields', () => {
     const full: Record<string, unknown> = {
       apiKeyEnvVar: 'MY_KEY', accountId: 'acc-1', agentId: 'bot-1',
-      listenerMode: 'game', reflectEveryNHands: 5,
+      reflectEveryNHands: 5,
       suppressedSignals: ['HAND_UPDATE', 'BOGUS_SIGNAL'],
       tableChat: { reactive: true, receiveOpponentChat: false },
       paused: true, maxSessionsPerDay: 3, maxHandsPerDay: 100,
@@ -82,7 +82,6 @@ describe('readClawPlayConfig', () => {
     writeFileSync(CONFIG_PATH, JSON.stringify(full));
     const cfg = readClawPlayConfig();
     expect(cfg.apiKeyEnvVar).toBe('MY_KEY');
-    expect(cfg.listenerMode).toBe('game');
     expect(cfg.reflectEveryNHands).toBe(5);
     expect(cfg.suppressedSignals).toEqual(['HAND_UPDATE']); // BOGUS filtered out
     expect(cfg.tableChat).toEqual({ reactive: true, receiveOpponentChat: false });
@@ -93,12 +92,11 @@ describe('readClawPlayConfig', () => {
 
   it('ignores invalid field types', () => {
     writeFileSync(CONFIG_PATH, JSON.stringify({
-      apiKeyEnvVar: 123, listenerMode: 'invalid', reflectEveryNHands: -1,
+      apiKeyEnvVar: 123, reflectEveryNHands: -1,
       maxSessionsPerDay: -1, // negative fails >= 0 check
     }));
     const cfg = readClawPlayConfig();
     expect(cfg.apiKeyEnvVar).toBeUndefined();
-    expect(cfg.listenerMode).toBeUndefined();
     expect(cfg.reflectEveryNHands).toBeUndefined();
     expect(cfg.maxSessionsPerDay).toBeUndefined();
   });
