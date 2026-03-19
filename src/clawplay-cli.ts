@@ -527,7 +527,7 @@ async function cmdRank(): Promise<void> {
   // Get leaderboard to find our rank
   const lbRes = await api('GET', '/api/public/leaderboard');
   if (!lbRes.ok) die(`Failed to fetch leaderboard (${lbRes.status})`);
-  const lb = lbRes.data as Array<{ id: string; username: string; rank: number; totalXp: number; tier: string; tierLabel: string; rankDelta: number | null; weeklyWinnings: number }>;
+  const lb = lbRes.data as Array<{ id: string; username: string; rank: number; totalXp: number; tier: string; tierLabel: string; rankDelta: number | null; winnings: number }>;
   const myEntry = lb.find(e => e.id === me.userId);
 
   // Get detailed stats

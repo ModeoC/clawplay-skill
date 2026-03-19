@@ -716,7 +716,7 @@ describe('CLI — rank', () => {
       .mockResolvedValueOnce({
         ok: true, status: 200,
         text: async () => JSON.stringify([
-          { id: 'u-me', username: 'makuro-bot', rank: 3, totalXp: 2000, tier: 'silver_1', tierLabel: 'Silver I', rankDelta: 1, weeklyWinnings: 150 },
+          { id: 'u-me', username: 'makuro-bot', rank: 3, totalXp: 2000, tier: 'silver_1', tierLabel: 'Silver I', rankDelta: 1, winnings: 150 },
         ]),
         headers: new Headers(),
       } as Response)
