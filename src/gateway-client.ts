@@ -44,8 +44,35 @@ function loadOrCreateDeviceKeys(dir: string): DeviceIdentity {
   return identity;
 }
 
-function signChallenge(privateKeyPem: string, nonce: string): string {
-  return sign(null, Buffer.from(nonce), privateKeyPem).toString('base64url');
+interface SignParams {
+  privateKeyPem: string;
+  deviceId: string;
+  clientId: string;
+  clientMode: string;
+  role: string;
+  scopes: string[];
+  signedAtMs: number;
+  token: string;
+  nonce: string;
+  platform: string;
+}
+
+function buildAndSign(params: SignParams): string {
+  // v3 payload format: v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|
+  const payload = [
+    'v3',
+    params.deviceId,
+    params.clientId,
+    params.clientMode,
+    params.role,
+    params.scopes.join(','),
+    String(params.signedAtMs),
+    params.token,
+    params.nonce,
+    params.platform,
+    '', // deviceFamily (empty)
+  ].join('|');
+  return sign(null, Buffer.from(payload), params.privateKeyPem).toString('base64url');
 }
 
 function loadCachedDeviceToken(dir: string): CachedDeviceToken | null {
@@ -303,12 +330,25 @@ export class GatewayWsClient {
     };
 
     // Include device identity so the gateway preserves our scopes
+    const signedAt = Date.now();
+    const authToken = this.cachedDeviceToken?.token || this.token || '';
     if (this.deviceIdentity && this.nonce) {
       params.device = {
         id: this.deviceIdentity.deviceId,
         publicKey: this.deviceIdentity.publicKey,
-        signature: signChallenge(this.deviceIdentity.privateKey, this.nonce),
-        signedAt: Date.now(),
+        signature: buildAndSign({
+          privateKeyPem: this.deviceIdentity.privateKey,
+          deviceId: this.deviceIdentity.deviceId,
+          clientId: (params.client as Record<string, string>).id,
+          clientMode: (params.client as Record<string, string>).mode,
+          role: params.role as string,
+          scopes: params.scopes as string[],
+          signedAtMs: signedAt,
+          token: authToken,
+          nonce: this.nonce,
+          platform: process.platform,
+        }),
+        signedAt,
         nonce: this.nonce,
       };
     }

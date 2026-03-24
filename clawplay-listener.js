@@ -683,8 +683,22 @@ function loadOrCreateDeviceKeys(dir) {
   writeFileSync2(keyFile, JSON.stringify(identity, null, 2), { mode: 384 });
   return identity;
 }
-function signChallenge(privateKeyPem, nonce) {
-  return sign(null, Buffer.from(nonce), privateKeyPem).toString("base64url");
+function buildAndSign(params) {
+  const payload = [
+    "v3",
+    params.deviceId,
+    params.clientId,
+    params.clientMode,
+    params.role,
+    params.scopes.join(","),
+    String(params.signedAtMs),
+    params.token,
+    params.nonce,
+    params.platform,
+    ""
+    // deviceFamily (empty)
+  ].join("|");
+  return sign(null, Buffer.from(payload), params.privateKeyPem).toString("base64url");
 }
 function loadCachedDeviceToken(dir) {
   try {
@@ -877,12 +891,25 @@ var GatewayWsClient = class {
       role: "operator",
       scopes: ["operator.admin", "operator.write"]
     };
+    const signedAt = Date.now();
+    const authToken = this.cachedDeviceToken?.token || this.token || "";
     if (this.deviceIdentity && this.nonce) {
       params.device = {
         id: this.deviceIdentity.deviceId,
         publicKey: this.deviceIdentity.publicKey,
-        signature: signChallenge(this.deviceIdentity.privateKey, this.nonce),
-        signedAt: Date.now(),
+        signature: buildAndSign({
+          privateKeyPem: this.deviceIdentity.privateKey,
+          deviceId: this.deviceIdentity.deviceId,
+          clientId: params.client.id,
+          clientMode: params.client.mode,
+          role: params.role,
+          scopes: params.scopes,
+          signedAtMs: signedAt,
+          token: authToken,
+          nonce: this.nonce,
+          platform: process.platform
+        }),
+        signedAt,
         nonce: this.nonce
       };
     }
