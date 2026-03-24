@@ -5,11 +5,56 @@
  * Uses Node 22's built-in WHATWG WebSocket — no extra dependencies.
  */
 
-import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { randomUUID, generateKeyPairSync, sign, createHash } from 'node:crypto';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { SKILL_ROOT } from './review.js';
 
 const PROTOCOL_VERSION = 3;
+
+// ── Device Identity ─────────────────────────────────────────────────
+
+interface DeviceIdentity {
+  deviceId: string;
+  publicKey: string;   // PEM
+  privateKey: string;  // PEM
+}
+
+interface CachedDeviceToken {
+  token: string;
+  role?: string;
+  scopes?: string[];
+}
+
+function loadOrCreateDeviceKeys(dir: string): DeviceIdentity {
+  const keyFile = join(dir, '.device-identity.json');
+  if (existsSync(keyFile)) {
+    try { return JSON.parse(readFileSync(keyFile, 'utf8')); } catch {}
+  }
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519', {
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+  // Device ID = SHA-256 of raw Ed25519 public key bytes (last 32 bytes of SPKI DER)
+  const derBase64 = publicKey.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+  const rawKey = Buffer.from(derBase64, 'base64').subarray(-32);
+  const deviceId = createHash('sha256').update(rawKey).digest('hex');
+  const identity: DeviceIdentity = { deviceId, publicKey, privateKey };
+  writeFileSync(keyFile, JSON.stringify(identity, null, 2), { mode: 0o600 });
+  return identity;
+}
+
+function signChallenge(privateKeyPem: string, nonce: string): string {
+  return sign(null, Buffer.from(nonce), privateKeyPem).toString('base64url');
+}
+
+function loadCachedDeviceToken(dir: string): CachedDeviceToken | null {
+  try { return JSON.parse(readFileSync(join(dir, '.device-token.json'), 'utf8')); } catch { return null; }
+}
+
+function saveCachedDeviceToken(dir: string, data: CachedDeviceToken): void {
+  writeFileSync(join(dir, '.device-token.json'), JSON.stringify(data, null, 2), { mode: 0o600 });
+}
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -85,6 +130,8 @@ export class GatewayWsClient {
   private challengeTimer: ReturnType<typeof setTimeout> | null = null;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private emitFn: ((obj: Record<string, unknown>) => void) | null = null;
+  private deviceIdentity: DeviceIdentity | null = null;
+  private cachedDeviceToken: CachedDeviceToken | null = null;
 
   /** Called when the gateway reconnects after a previous successful connection. Not called on initial connect. */
   onReconnect: (() => void) | null = null;
@@ -93,6 +140,10 @@ export class GatewayWsClient {
     this.token = resolveGatewayToken();
     this.url = resolveGatewayUrl();
     this.emitFn = opts?.emit ?? null;
+    try {
+      this.deviceIdentity = loadOrCreateDeviceKeys(SKILL_ROOT);
+      this.cachedDeviceToken = loadCachedDeviceToken(SKILL_ROOT);
+    } catch {}
   }
 
   /** Whether the WS is currently connected and authenticated. */
@@ -248,15 +299,40 @@ export class GatewayWsClient {
       },
       caps: [],
       role: 'operator',
-      scopes: ['operator.admin'],
+      scopes: ['operator.admin', 'operator.write'],
     };
 
-    if (this.token) {
+    // Include device identity so the gateway preserves our scopes
+    if (this.deviceIdentity && this.nonce) {
+      params.device = {
+        id: this.deviceIdentity.deviceId,
+        publicKey: this.deviceIdentity.publicKey,
+        signature: signChallenge(this.deviceIdentity.privateKey, this.nonce),
+        signedAt: Date.now(),
+        nonce: this.nonce,
+      };
+    }
+
+    // Prefer cached device token (preserves scopes), fall back to shared gateway token
+    if (this.cachedDeviceToken?.token) {
+      params.auth = { deviceToken: this.cachedDeviceToken.token };
+    } else if (this.token) {
       params.auth = { token: this.token };
     }
 
     this.request('connect', params, { timeoutMs: 5000 })
-      .then(() => {
+      .then((result) => {
+        // Cache device token if gateway issued one
+        const auth = (result as Record<string, unknown>)?.auth as Record<string, unknown> | undefined;
+        if (auth?.deviceToken) {
+          this.cachedDeviceToken = {
+            token: auth.deviceToken as string,
+            role: auth.role as string | undefined,
+            scopes: auth.scopes as string[] | undefined,
+          };
+          try { saveCachedDeviceToken(SKILL_ROOT, this.cachedDeviceToken); } catch {}
+        }
+
         const isReconnect = this.wasEverConnected;
         this._connected = true;
         this.wasEverConnected = true;
@@ -275,9 +351,6 @@ export class GatewayWsClient {
         this.connectPromise = null;
         this.connectResolve = null;
         this.connectReject = null;
-        // Safe: if the challenge timer already fired, flushPending() rejected this
-        // request synchronously (clearing its timer), so this.ws is null here and
-        // close() is a no-op. The new WS from scheduleReconnect hasn't been created yet.
         this.ws?.close();
       });
   }

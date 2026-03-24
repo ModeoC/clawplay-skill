@@ -402,7 +402,7 @@ var init_dist2 = __esm({
 });
 
 // clawplay-listener.ts
-import { readFileSync as readFileSync4, writeFileSync as writeFileSync3, unlinkSync as unlinkSync2, createWriteStream } from "node:fs";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync4, unlinkSync as unlinkSync2, createWriteStream } from "node:fs";
 import { join as join4 } from "node:path";
 
 // review.ts
@@ -660,10 +660,42 @@ ${currentInsights}`);
 }
 
 // gateway-client.ts
-import { randomUUID } from "node:crypto";
-import { readFileSync as readFileSync2 } from "node:fs";
+import { randomUUID, generateKeyPairSync, sign, createHash } from "node:crypto";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync } from "node:fs";
 import { join as join2 } from "node:path";
 var PROTOCOL_VERSION = 3;
+function loadOrCreateDeviceKeys(dir) {
+  const keyFile = join2(dir, ".device-identity.json");
+  if (existsSync(keyFile)) {
+    try {
+      return JSON.parse(readFileSync2(keyFile, "utf8"));
+    } catch {
+    }
+  }
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" }
+  });
+  const derBase64 = publicKey.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
+  const rawKey = Buffer.from(derBase64, "base64").subarray(-32);
+  const deviceId = createHash("sha256").update(rawKey).digest("hex");
+  const identity = { deviceId, publicKey, privateKey };
+  writeFileSync2(keyFile, JSON.stringify(identity, null, 2), { mode: 384 });
+  return identity;
+}
+function signChallenge(privateKeyPem, nonce) {
+  return sign(null, Buffer.from(nonce), privateKeyPem).toString("base64url");
+}
+function loadCachedDeviceToken(dir) {
+  try {
+    return JSON.parse(readFileSync2(join2(dir, ".device-token.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+function saveCachedDeviceToken(dir, data) {
+  writeFileSync2(join2(dir, ".device-token.json"), JSON.stringify(data, null, 2), { mode: 384 });
+}
 function resolveGatewayToken() {
   const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim() || process.env.CLAWDBOT_GATEWAY_TOKEN?.trim();
   if (envToken) return envToken;
@@ -703,12 +735,19 @@ var GatewayWsClient = class {
   challengeTimer = null;
   keepaliveTimer = null;
   emitFn = null;
+  deviceIdentity = null;
+  cachedDeviceToken = null;
   /** Called when the gateway reconnects after a previous successful connection. Not called on initial connect. */
   onReconnect = null;
   constructor(opts) {
     this.token = resolveGatewayToken();
     this.url = resolveGatewayUrl();
     this.emitFn = opts?.emit ?? null;
+    try {
+      this.deviceIdentity = loadOrCreateDeviceKeys(SKILL_ROOT);
+      this.cachedDeviceToken = loadCachedDeviceToken(SKILL_ROOT);
+    } catch {
+    }
   }
   /** Whether the WS is currently connected and authenticated. */
   isConnected() {
@@ -836,12 +875,35 @@ var GatewayWsClient = class {
       },
       caps: [],
       role: "operator",
-      scopes: ["operator.admin"]
+      scopes: ["operator.admin", "operator.write"]
     };
-    if (this.token) {
+    if (this.deviceIdentity && this.nonce) {
+      params.device = {
+        id: this.deviceIdentity.deviceId,
+        publicKey: this.deviceIdentity.publicKey,
+        signature: signChallenge(this.deviceIdentity.privateKey, this.nonce),
+        signedAt: Date.now(),
+        nonce: this.nonce
+      };
+    }
+    if (this.cachedDeviceToken?.token) {
+      params.auth = { deviceToken: this.cachedDeviceToken.token };
+    } else if (this.token) {
       params.auth = { token: this.token };
     }
-    this.request("connect", params, { timeoutMs: 5e3 }).then(() => {
+    this.request("connect", params, { timeoutMs: 5e3 }).then((result) => {
+      const auth = result?.auth;
+      if (auth?.deviceToken) {
+        this.cachedDeviceToken = {
+          token: auth.deviceToken,
+          role: auth.role,
+          scopes: auth.scopes
+        };
+        try {
+          saveCachedDeviceToken(SKILL_ROOT, this.cachedDeviceToken);
+        } catch {
+        }
+      }
       const isReconnect = this.wasEverConnected;
       this._connected = true;
       this.wasEverConnected = true;
@@ -980,7 +1042,7 @@ var GatewayWsClient = class {
 
 // game-session.ts
 import { execFile } from "node:child_process";
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, unlinkSync } from "node:fs";
+import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, unlinkSync } from "node:fs";
 import { join as join3 } from "node:path";
 
 // state-differ.ts
@@ -1211,7 +1273,7 @@ function readSessionInsights() {
 }
 function writeSessionInsights(insights) {
   try {
-    writeFileSync2(INSIGHTS_FILE, insights + "\n");
+    writeFileSync3(INSIGHTS_FILE, insights + "\n");
   } catch {
   }
 }
@@ -1980,7 +2042,7 @@ async function acquirePidLock(lockFile, emitFn) {
     if (existingPid && existingPid !== process.pid) {
       try {
         process.kill(existingPid, 0);
-        writeFileSync3(lockFile, String(process.pid));
+        writeFileSync4(lockFile, String(process.pid));
         emitFn({ type: "KILLING_STALE_LISTENER", pid: existingPid });
         process.kill(existingPid, "SIGTERM");
         await new Promise((r) => setTimeout(r, 2e3));
@@ -1995,7 +2057,7 @@ async function acquirePidLock(lockFile, emitFn) {
     }
   } catch {
   }
-  writeFileSync3(lockFile, String(process.pid));
+  writeFileSync4(lockFile, String(process.pid));
 }
 function releasePidLock(lockFile) {
   try {
@@ -2039,7 +2101,7 @@ function persistLaunchArgs(configPath, channel, chatId, account) {
     const prev = cfg.lastLaunchArgs;
     if (!prev || prev.channel !== launchArgs.channel || prev.chatId !== launchArgs.chatId || prev.account !== launchArgs.account) {
       cfg.lastLaunchArgs = launchArgs;
-      writeFileSync3(configPath, JSON.stringify(cfg) + "\n");
+      writeFileSync4(configPath, JSON.stringify(cfg) + "\n");
     }
   } catch {
   }
