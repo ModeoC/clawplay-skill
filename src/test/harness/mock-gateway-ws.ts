@@ -22,6 +22,7 @@ export class MockGatewayWS {
   private wss: WebSocketServer;
   private clients: WebSocket[] = [];
   private callHistory: AgentCallCapture[] = [];
+  private lastConnectParams: Record<string, unknown> | null = null;
   private decisionResponse = '{"action":"fold","narration":"I fold."}';
   private reflectionResponse = '{"insights":"Opponent is passive."}';
   private responseDelay = 0;
@@ -132,6 +133,11 @@ export class MockGatewayWS {
     return this.clients.length;
   }
 
+  /** Get the params from the last connect handshake. */
+  getLastConnectParams(): Record<string, unknown> | null {
+    return this.lastConnectParams;
+  }
+
   // ── Internal ───────────────────────────────────────────────────
 
   private handleMessage(ws: WebSocket, msg: Record<string, unknown>): void {
@@ -142,6 +148,7 @@ export class MockGatewayWS {
     const params = (msg.params || {}) as Record<string, unknown>;
 
     if (method === 'connect') {
+      this.lastConnectParams = params;
       // Auth handshake — always accept
       ws.send(JSON.stringify({
         type: 'res', id, ok: true, payload: { status: 'connected' },

@@ -553,6 +553,7 @@ async function main(): Promise<void> {
     suppressedSignals,
     tableChatReactive: config.tableChat?.reactive ?? true,
     receiveOpponentChat: config.tableChat?.receiveOpponentChat ?? true,
+    models: config.models,
     gatewayClient,
     debugFn: debug,
     emitFn: emit,

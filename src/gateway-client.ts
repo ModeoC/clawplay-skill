@@ -14,19 +14,19 @@ const PROTOCOL_VERSION = 3;
 
 // ── Device Identity ─────────────────────────────────────────────────
 
-interface DeviceIdentity {
+export interface DeviceIdentity {
   deviceId: string;
   publicKey: string;   // PEM
   privateKey: string;  // PEM
 }
 
-interface CachedDeviceToken {
+export interface CachedDeviceToken {
   token: string;
   role?: string;
   scopes?: string[];
 }
 
-function loadOrCreateDeviceKeys(dir: string): DeviceIdentity {
+export function loadOrCreateDeviceKeys(dir: string): DeviceIdentity {
   const keyFile = join(dir, '.device-identity.json');
   if (existsSync(keyFile)) {
     try { return JSON.parse(readFileSync(keyFile, 'utf8')); } catch {}
@@ -44,7 +44,7 @@ function loadOrCreateDeviceKeys(dir: string): DeviceIdentity {
   return identity;
 }
 
-interface SignParams {
+export interface SignParams {
   privateKeyPem: string;
   deviceId: string;
   clientId: string;
@@ -57,7 +57,7 @@ interface SignParams {
   platform: string;
 }
 
-function buildAndSign(params: SignParams): string {
+export function buildAndSign(params: SignParams): string {
   // v3 payload format: v3|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce|platform|
   const payload = [
     'v3',
@@ -75,11 +75,11 @@ function buildAndSign(params: SignParams): string {
   return sign(null, Buffer.from(payload), params.privateKeyPem).toString('base64url');
 }
 
-function loadCachedDeviceToken(dir: string): CachedDeviceToken | null {
+export function loadCachedDeviceToken(dir: string): CachedDeviceToken | null {
   try { return JSON.parse(readFileSync(join(dir, '.device-token.json'), 'utf8')); } catch { return null; }
 }
 
-function saveCachedDeviceToken(dir: string, data: CachedDeviceToken): void {
+export function saveCachedDeviceToken(dir: string, data: CachedDeviceToken): void {
   writeFileSync(join(dir, '.device-token.json'), JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 

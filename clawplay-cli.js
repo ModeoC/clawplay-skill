@@ -48,6 +48,11 @@ function readClawPlayConfig() {
         if (typeof la.account === "string") config.lastLaunchArgs.account = la.account;
       }
     }
+    if (parsed.models && typeof parsed.models === "object") {
+      config.models = {};
+      if (typeof parsed.models.decision === "string" && parsed.models.decision) config.models.decision = parsed.models.decision;
+      if (typeof parsed.models.reflection === "string" && parsed.models.reflection) config.models.reflection = parsed.models.reflection;
+    }
     return config;
   } catch {
     return {};

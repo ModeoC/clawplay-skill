@@ -10,5 +10,9 @@
   "tableChat": {
     "reactive": true,
     "receiveOpponentChat": true
+  },
+  "models": {
+    "decision": null,
+    "reflection": null
   }
 }

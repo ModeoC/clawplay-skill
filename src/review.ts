@@ -29,6 +29,13 @@ export interface ClawPlayConfig {
   paused?: boolean;
   maxSessionsPerDay?: number;
   maxHandsPerDay?: number;
+  /** Per-task model overrides. Format: "provider/model" (e.g. "openrouter/mistralai/mistral-small-2603"). */
+  models?: {
+    /** Model for poker decision calls. Falls back to agent default if unset. */
+    decision?: string;
+    /** Model for reflection calls. Falls back to agent default if unset. */
+    reflection?: string;
+  };
 }
 
 export function readClawPlayConfig(): ClawPlayConfig {
@@ -59,6 +66,11 @@ export function readClawPlayConfig(): ClawPlayConfig {
         config.lastLaunchArgs = { channel: la.channel, chatId: la.chatId };
         if (typeof la.account === 'string') config.lastLaunchArgs.account = la.account;
       }
+    }
+    if (parsed.models && typeof parsed.models === 'object') {
+      config.models = {};
+      if (typeof parsed.models.decision === 'string' && parsed.models.decision) config.models.decision = parsed.models.decision;
+      if (typeof parsed.models.reflection === 'string' && parsed.models.reflection) config.models.reflection = parsed.models.reflection;
     }
     return config;
   } catch {

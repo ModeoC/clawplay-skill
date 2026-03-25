@@ -7,6 +7,7 @@
 
 import { execFile } from 'node:child_process';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildSummary,
@@ -46,6 +47,8 @@ export interface GameSessionConfig {
   gatewayClient: GatewayWsClient;
   debugFn: (label: string, data: Record<string, unknown>) => void;
   emitFn: (obj: Record<string, unknown> | ListenerOutput) => void;
+  /** Per-task model overrides (format: "provider/model"). */
+  models?: { decision?: string; reflection?: string };
 }
 
 // ── Session insights file ───────────────────────────────────────────
@@ -76,6 +79,31 @@ function handSessionId(gameId: string, handNumber: number): string {
   return `poker-${gameId}-h${handNumber}`;
 }
 
+/** Parse a "provider/model" spec into { provider, model }. Handles OpenRouter "openrouter/org/model" format. */
+function parseModelSpec(spec: string): { provider: string; model: string } | null {
+  const parts = spec.split('/');
+  if (parts.length === 2) return { provider: parts[0], model: parts[1] };
+  if (parts.length >= 3) return { provider: parts[0], model: parts.slice(1).join('/') };
+  return null;
+}
+
+/** Pre-seed modelOverride/providerOverride on a session entry in sessions.json before callAgent. */
+function setSessionModelOverride(agentId: string, sessionKey: string, modelSpec: string | undefined): void {
+  if (!modelSpec) return;
+  const parsed = parseModelSpec(modelSpec);
+  if (!parsed) return;
+  const sessionsPath = join(homedir(), '.openclaw', 'agents', agentId, 'sessions', 'sessions.json');
+  try {
+    const data = JSON.parse(readFileSync(sessionsPath, 'utf8'));
+    if (!data[sessionKey]) data[sessionKey] = {};
+    data[sessionKey].modelOverride = parsed.model;
+    data[sessionKey].providerOverride = parsed.provider;
+    writeFileSync(sessionsPath, JSON.stringify(data));
+  } catch {
+    // Non-fatal — gateway will use agent default model
+  }
+}
+
 // ── GameSession class ───────────────────────────────────────────────
 
 export class GameSession {
@@ -91,6 +119,7 @@ export class GameSession {
   readonly gatewayClient: GatewayWsClient;
   private readonly debug: (label: string, data: Record<string, unknown>) => void;
   private readonly emit: (obj: Record<string, unknown> | ListenerOutput) => void;
+  private readonly models: { decision?: string; reflection?: string };
 
   // Per-game mutable state
   gameId = 'unknown';
@@ -165,6 +194,7 @@ export class GameSession {
     this.suppressedSignals = new Set(config.suppressedSignals ?? []);
     this.tableChatReactive = config.tableChatReactive ?? true;
     this.receiveOpponentChat = config.receiveOpponentChat ?? true;
+    this.models = config.models ?? {};
     this.gatewayClient = config.gatewayClient;
     this.debug = config.debugFn;
     this.emit = config.emitFn;
@@ -348,9 +378,11 @@ export class GameSession {
     this.debug('REFLECTION_PROMPT', { hand: view.handNumber, prompt: reflectionPrompt });
 
     const reflectionHandNumber = view.handNumber;
+    const reflectSessionKey = `agent:${this.agentId}:subagent:poker-${this.gameId}-reflect`;
+    setSessionModelOverride(this.agentId, reflectSessionKey, this.models.reflection);
     this.gatewayClient.callAgent({
       agentId: this.agentId,
-      sessionKey: `agent:${this.agentId}:subagent:poker-${this.gameId}-reflect`,
+      sessionKey: reflectSessionKey,
       sessionId: `poker-${this.gameId}-reflect`,
       message: reflectionPrompt,
       timeout: 35,
@@ -589,6 +621,7 @@ export class GameSession {
       let agentText = '';
       try {
         const sessionKey = `agent:${this.agentId}:subagent:${handSessionId(this.gameId, myHandNumber!)}`;
+        setSessionModelOverride(this.agentId, sessionKey, this.models.decision);
         const result = await this.gatewayClient.callAgent({
           agentId: this.agentId,
           sessionKey,
@@ -773,9 +806,11 @@ export class GameSession {
     try {
       const prompt = `Something just happened at the table: ${description}. You can react with a short message (one sentence max) or say nothing. Respond with JSON: {"chat": "..."} or {"chat": ""} to stay silent.`;
 
+      const reactionSessionKey = `agent:${this.agentId}:subagent:${handSessionId(this.gameId, handNumber)}`;
+      setSessionModelOverride(this.agentId, reactionSessionKey, this.models.decision);
       const result = await this.gatewayClient.callAgent({
         agentId: this.agentId,
-        sessionKey: `agent:${this.agentId}:subagent:${handSessionId(this.gameId, handNumber)}`,
+        sessionKey: reactionSessionKey,
         sessionId: handSessionId(this.gameId, handNumber),
         message: prompt,
         thinking: 'low',
