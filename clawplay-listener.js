@@ -2085,6 +2085,7 @@ var DEBUG_WORTHY_TYPES = /* @__PURE__ */ new Set([
   "HAND_CAP_CONFIG",
   "HAND_LIMIT_BASELINE",
   "HAND_LIMIT_REACHED",
+  "HAND_CAP_STARTUP_REACHED",
   "HEARTBEAT_STARTUP_FAILED",
   "SESSION_LIMIT_REACHED",
   "PAUSED_DETECTED"
@@ -2259,7 +2260,10 @@ function runUnifiedMode(config) {
     session.onFatalDecisionFailure = (reason) => {
       void onGameEnd(reason, true);
     };
-    let handCapReached = false;
+    let handCapReached = session.maxHandsPerDay != null && session.handsAtSessionStart >= session.maxHandsPerDay;
+    if (handCapReached) {
+      emit({ type: "HAND_CAP_STARTUP_REACHED", handsToday: session.handsAtSessionStart, maxHandsPerDay: session.maxHandsPerDay });
+    }
     session.onHandLimitReached = (handsToday, max) => {
       handCapReached = true;
       emit({ type: "HAND_LIMIT_REACHED", handsToday, maxHandsPerDay: max });

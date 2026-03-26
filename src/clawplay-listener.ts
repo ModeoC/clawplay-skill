@@ -44,7 +44,7 @@ const DEBUG_WORTHY_TYPES = new Set([
   'KILLING_STALE_LISTENER', 'GW_CONNECT_FAILED',
   'SSE_OPEN', 'SSE_CONNECTED',
   // Hand cap & pacing observability
-  'HAND_CAP_CONFIG', 'HAND_LIMIT_BASELINE', 'HAND_LIMIT_REACHED',
+  'HAND_CAP_CONFIG', 'HAND_LIMIT_BASELINE', 'HAND_LIMIT_REACHED', 'HAND_CAP_STARTUP_REACHED',
   'HEARTBEAT_STARTUP_FAILED', 'SESSION_LIMIT_REACHED', 'PAUSED_DETECTED',
 ]);
 
@@ -293,7 +293,13 @@ function runUnifiedMode(config: UnifiedModeConfig): Promise<void> {
 
     // Wire up hand cap handler — leave the game gracefully but keep the listener alive.
     // The listener stays in lobby mode with handCapReached=true and won't join new games.
-    let handCapReached = false;
+    // Initialize from session baseline: if daily cap already reached at startup, block joins immediately
+    // so the agent doesn't join a game only to leave after 1 hand.
+    let handCapReached = session.maxHandsPerDay != null
+      && session.handsAtSessionStart >= session.maxHandsPerDay;
+    if (handCapReached) {
+      emit({ type: 'HAND_CAP_STARTUP_REACHED', handsToday: session.handsAtSessionStart, maxHandsPerDay: session.maxHandsPerDay });
+    }
     session.onHandLimitReached = (handsToday: number, max: number) => {
       handCapReached = true;
       emit({ type: 'HAND_LIMIT_REACHED', handsToday, maxHandsPerDay: max });
