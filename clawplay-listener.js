@@ -1008,6 +1008,8 @@ var GatewayWsClient = class {
     if (params.thinking) rpcParams.thinking = params.thinking;
     if (params.timeout != null) rpcParams.timeout = params.timeout;
     if (params.extraSystemPrompt) rpcParams.extraSystemPrompt = params.extraSystemPrompt;
+    if (params.modelOverride) rpcParams.modelOverride = params.modelOverride;
+    if (params.providerOverride) rpcParams.providerOverride = params.providerOverride;
     const result = await this.request("agent", rpcParams, {
       timeoutMs,
       expectFinal: true
@@ -1075,7 +1077,6 @@ var GatewayWsClient = class {
 // game-session.ts
 import { execFile } from "node:child_process";
 import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
 import { join as join3 } from "node:path";
 
 // state-differ.ts
@@ -1320,25 +1321,12 @@ function readHandNotes() {
 function handSessionId(gameId, handNumber) {
   return `poker-${gameId}-h${handNumber}`;
 }
-function parseModelSpec(spec) {
-  const parts = spec.split("/");
-  if (parts.length === 2) return { provider: parts[0], model: parts[1] };
-  if (parts.length >= 3) return { provider: parts[0], model: parts.slice(1).join("/") };
-  return null;
-}
-function setSessionModelOverride(agentId, sessionKey, modelSpec) {
-  if (!modelSpec) return;
-  const parsed = parseModelSpec(modelSpec);
-  if (!parsed) return;
-  const sessionsPath = join3(homedir(), ".openclaw", "agents", agentId, "sessions", "sessions.json");
-  try {
-    const data = JSON.parse(readFileSync3(sessionsPath, "utf8"));
-    if (!data[sessionKey]) data[sessionKey] = {};
-    data[sessionKey].modelOverride = parsed.model;
-    data[sessionKey].providerOverride = parsed.provider;
-    writeFileSync3(sessionsPath, JSON.stringify(data));
-  } catch {
-  }
+function modelOverrideParams(modelSpec) {
+  if (!modelSpec) return {};
+  const parts = modelSpec.split("/");
+  if (parts.length === 2) return { providerOverride: parts[0], modelOverride: parts[1] };
+  if (parts.length >= 3) return { providerOverride: parts[0], modelOverride: parts.slice(1).join("/") };
+  return {};
 }
 var GameSession = class _GameSession {
   // Config (immutable after construction)
@@ -1582,14 +1570,14 @@ var GameSession = class _GameSession {
     this.debug("REFLECTION_PROMPT", { hand: view.handNumber, prompt: reflectionPrompt });
     const reflectionHandNumber = view.handNumber;
     const reflectSessionKey = `agent:${this.agentId}:subagent:poker-${this.gameId}-reflect`;
-    setSessionModelOverride(this.agentId, reflectSessionKey, this.models.reflection);
     this.gatewayClient.callAgent({
       agentId: this.agentId,
       sessionKey: reflectSessionKey,
       sessionId: `poker-${this.gameId}-reflect`,
       message: reflectionPrompt,
       timeout: 35,
-      extraSystemPrompt: this.personalityContext || void 0
+      extraSystemPrompt: this.personalityContext || void 0,
+      ...modelOverrideParams(this.models.reflection)
     }, 4e4).then((result) => {
       const agentText = [...result.payloads || []].reverse().find((p) => p.text)?.text || "";
       const innerStart = agentText.indexOf("{");
@@ -1782,7 +1770,6 @@ var GameSession = class _GameSession {
       let agentText = "";
       try {
         const sessionKey = `agent:${this.agentId}:subagent:${handSessionId(this.gameId, myHandNumber)}`;
-        setSessionModelOverride(this.agentId, sessionKey, this.models.decision);
         const result = await this.gatewayClient.callAgent({
           agentId: this.agentId,
           sessionKey,
@@ -1790,7 +1777,8 @@ var GameSession = class _GameSession {
           message: prompt,
           thinking: "low",
           timeout: 55,
-          extraSystemPrompt: this.personalityContext || void 0
+          extraSystemPrompt: this.personalityContext || void 0,
+          ...modelOverrideParams(this.models.decision)
         }, 65e3);
         agentText = [...result.payloads || []].reverse().find((p) => p.text)?.text || "";
       } catch (err) {
@@ -1947,7 +1935,6 @@ var GameSession = class _GameSession {
     try {
       const prompt = `Something just happened at the table: ${description}. You can react with a short message (one sentence max) or say nothing. Respond with JSON: {"chat": "..."} or {"chat": ""} to stay silent.`;
       const reactionSessionKey = `agent:${this.agentId}:subagent:${handSessionId(this.gameId, handNumber)}`;
-      setSessionModelOverride(this.agentId, reactionSessionKey, this.models.decision);
       const result = await this.gatewayClient.callAgent({
         agentId: this.agentId,
         sessionKey: reactionSessionKey,
@@ -1955,7 +1942,8 @@ var GameSession = class _GameSession {
         message: prompt,
         thinking: "low",
         timeout: 15,
-        extraSystemPrompt: this.personalityContext || void 0
+        extraSystemPrompt: this.personalityContext || void 0,
+        ...modelOverrideParams(this.models.decision)
       }, 2e4);
       if (this.decisionInFlight) {
         this.debug("REACTION_DISCARDED", { reason: "decision_started", description });

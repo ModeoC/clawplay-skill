@@ -7,7 +7,6 @@
 
 import { execFile } from 'node:child_process';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildSummary,
@@ -79,29 +78,13 @@ function handSessionId(gameId: string, handNumber: number): string {
   return `poker-${gameId}-h${handNumber}`;
 }
 
-/** Parse a "provider/model" spec into { provider, model }. Handles OpenRouter "openrouter/org/model" format. */
-function parseModelSpec(spec: string): { provider: string; model: string } | null {
-  const parts = spec.split('/');
-  if (parts.length === 2) return { provider: parts[0], model: parts[1] };
-  if (parts.length >= 3) return { provider: parts[0], model: parts.slice(1).join('/') };
-  return null;
-}
-
-/** Pre-seed modelOverride/providerOverride on a session entry in sessions.json before callAgent. */
-function setSessionModelOverride(agentId: string, sessionKey: string, modelSpec: string | undefined): void {
-  if (!modelSpec) return;
-  const parsed = parseModelSpec(modelSpec);
-  if (!parsed) return;
-  const sessionsPath = join(homedir(), '.openclaw', 'agents', agentId, 'sessions', 'sessions.json');
-  try {
-    const data = JSON.parse(readFileSync(sessionsPath, 'utf8'));
-    if (!data[sessionKey]) data[sessionKey] = {};
-    data[sessionKey].modelOverride = parsed.model;
-    data[sessionKey].providerOverride = parsed.provider;
-    writeFileSync(sessionsPath, JSON.stringify(data));
-  } catch {
-    // Non-fatal — gateway will use agent default model
-  }
+/** Parse a "provider/model" spec into callAgent override params. Returns empty object if unset. */
+function modelOverrideParams(modelSpec: string | undefined): { modelOverride?: string; providerOverride?: string } {
+  if (!modelSpec) return {};
+  const parts = modelSpec.split('/');
+  if (parts.length === 2) return { providerOverride: parts[0], modelOverride: parts[1] };
+  if (parts.length >= 3) return { providerOverride: parts[0], modelOverride: parts.slice(1).join('/') };
+  return {};
 }
 
 // ── GameSession class ───────────────────────────────────────────────
@@ -379,7 +362,6 @@ export class GameSession {
 
     const reflectionHandNumber = view.handNumber;
     const reflectSessionKey = `agent:${this.agentId}:subagent:poker-${this.gameId}-reflect`;
-    setSessionModelOverride(this.agentId, reflectSessionKey, this.models.reflection);
     this.gatewayClient.callAgent({
       agentId: this.agentId,
       sessionKey: reflectSessionKey,
@@ -387,6 +369,7 @@ export class GameSession {
       message: reflectionPrompt,
       timeout: 35,
       extraSystemPrompt: this.personalityContext || undefined,
+      ...modelOverrideParams(this.models.reflection),
     }, 40_000).then(result => {
       const agentText = [...(result.payloads || [])].reverse().find((p: { text?: string }) => p.text)?.text || '';
       const innerStart = agentText.indexOf('{');
@@ -621,7 +604,6 @@ export class GameSession {
       let agentText = '';
       try {
         const sessionKey = `agent:${this.agentId}:subagent:${handSessionId(this.gameId, myHandNumber!)}`;
-        setSessionModelOverride(this.agentId, sessionKey, this.models.decision);
         const result = await this.gatewayClient.callAgent({
           agentId: this.agentId,
           sessionKey,
@@ -630,6 +612,7 @@ export class GameSession {
           thinking: 'low',
           timeout: 55,
           extraSystemPrompt: this.personalityContext || undefined,
+          ...modelOverrideParams(this.models.decision),
         }, 65_000);
 
         agentText = [...(result.payloads || [])].reverse().find((p: { text?: string }) => p.text)?.text || '';
@@ -807,7 +790,6 @@ export class GameSession {
       const prompt = `Something just happened at the table: ${description}. You can react with a short message (one sentence max) or say nothing. Respond with JSON: {"chat": "..."} or {"chat": ""} to stay silent.`;
 
       const reactionSessionKey = `agent:${this.agentId}:subagent:${handSessionId(this.gameId, handNumber)}`;
-      setSessionModelOverride(this.agentId, reactionSessionKey, this.models.decision);
       const result = await this.gatewayClient.callAgent({
         agentId: this.agentId,
         sessionKey: reactionSessionKey,
@@ -816,6 +798,7 @@ export class GameSession {
         thinking: 'low',
         timeout: 15,
         extraSystemPrompt: this.personalityContext || undefined,
+        ...modelOverrideParams(this.models.decision),
       }, 20_000);
 
       // If a decision started while we were waiting, discard the reaction
