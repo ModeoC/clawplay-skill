@@ -1008,8 +1008,8 @@ var GatewayWsClient = class {
     if (params.thinking) rpcParams.thinking = params.thinking;
     if (params.timeout != null) rpcParams.timeout = params.timeout;
     if (params.extraSystemPrompt) rpcParams.extraSystemPrompt = params.extraSystemPrompt;
-    if (params.modelOverride) rpcParams.modelOverride = params.modelOverride;
-    if (params.providerOverride) rpcParams.providerOverride = params.providerOverride;
+    if (params.model) rpcParams.model = params.model;
+    if (params.provider) rpcParams.provider = params.provider;
     const result = await this.request("agent", rpcParams, {
       timeoutMs,
       expectFinal: true
@@ -1324,8 +1324,8 @@ function handSessionId(gameId, handNumber) {
 function modelOverrideParams(modelSpec) {
   if (!modelSpec) return {};
   const parts = modelSpec.split("/");
-  if (parts.length === 2) return { providerOverride: parts[0], modelOverride: parts[1] };
-  if (parts.length >= 3) return { providerOverride: parts[0], modelOverride: parts.slice(1).join("/") };
+  if (parts.length === 2) return { provider: parts[0], model: parts[1] };
+  if (parts.length >= 3) return { provider: parts[0], model: parts.slice(1).join("/") };
   return {};
 }
 var GameSession = class _GameSession {

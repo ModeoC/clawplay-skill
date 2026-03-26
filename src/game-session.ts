@@ -79,11 +79,11 @@ function handSessionId(gameId: string, handNumber: number): string {
 }
 
 /** Parse a "provider/model" spec into callAgent override params. Returns empty object if unset. */
-function modelOverrideParams(modelSpec: string | undefined): { modelOverride?: string; providerOverride?: string } {
+function modelOverrideParams(modelSpec: string | undefined): { model?: string; provider?: string } {
   if (!modelSpec) return {};
   const parts = modelSpec.split('/');
-  if (parts.length === 2) return { providerOverride: parts[0], modelOverride: parts[1] };
-  if (parts.length >= 3) return { providerOverride: parts[0], modelOverride: parts.slice(1).join('/') };
+  if (parts.length === 2) return { provider: parts[0], model: parts[1] };
+  if (parts.length >= 3) return { provider: parts[0], model: parts.slice(1).join('/') };
   return {};
 }
 

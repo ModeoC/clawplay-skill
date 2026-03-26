@@ -101,10 +101,10 @@ export interface AgentCallParams {
   timeout?: number; // seconds (server-side)
   idempotencyKey?: string;
   extraSystemPrompt?: string;
-  /** Model override — passed through to gateway RPC. Format: "model-id" (e.g. "mistralai/mistral-small-2603"). */
-  modelOverride?: string;
-  /** Provider override — passed through to gateway RPC. Format: "provider-id" (e.g. "openrouter"). */
-  providerOverride?: string;
+  /** Model override for this call. Format: "model-id" (e.g. "mistralai/mistral-small-2603"). */
+  model?: string;
+  /** Provider override for this call. Format: "provider-id" (e.g. "openrouter"). */
+  provider?: string;
 }
 
 export interface AgentCallResult {
@@ -459,8 +459,8 @@ export class GatewayWsClient {
     if (params.thinking) rpcParams.thinking = params.thinking;
     if (params.timeout != null) rpcParams.timeout = params.timeout;
     if (params.extraSystemPrompt) rpcParams.extraSystemPrompt = params.extraSystemPrompt;
-    if (params.modelOverride) rpcParams.modelOverride = params.modelOverride;
-    if (params.providerOverride) rpcParams.providerOverride = params.providerOverride;
+    if (params.model) rpcParams.model = params.model;
+    if (params.provider) rpcParams.provider = params.provider;
 
     const result = await this.request('agent', rpcParams, {
       timeoutMs,
