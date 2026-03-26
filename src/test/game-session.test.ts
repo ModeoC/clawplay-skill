@@ -563,6 +563,108 @@ describe('GameSession — sendDecision', () => {
   });
 });
 
+// ── Model override via config.models ─────────────────────────────────
+
+describe('GameSession — model override', () => {
+  it('passes model and provider to callAgent for decisions when models.decision is set', async () => {
+    const mockGw = makeMockGatewayClient();
+    const callArgs: unknown[] = [];
+    mockGw.callAgent = async (...args: unknown[]) => {
+      callArgs.push(args[0]);
+      return { payloads: [{ text: '{"action":"fold","narration":"fold"}' }] };
+    };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+      models: { decision: 'openrouter/mistralai/mistral-small-2603' },
+    });
+    session.currentHandNumber = 1;
+    session.sendDecision('test prompt', makeContext());
+    await session.lastDecision;
+
+    const params = callArgs[0] as Record<string, unknown>;
+    expect(params.model).toBe('mistralai/mistral-small-2603');
+    expect(params.provider).toBe('openrouter');
+  });
+
+  it('passes model and provider to callAgent for reflections when models.reflection is set', async () => {
+    const mockGw = makeMockGatewayClient();
+    const callArgs: unknown[] = [];
+    mockGw.callAgent = async (...args: unknown[]) => {
+      callArgs.push(args[0]);
+      return { payloads: [{ text: '{"insights":"test insights"}' }] };
+    };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+      models: { reflection: 'moonshot-intl/kimi-k2.5' },
+    });
+    session.gameId = 'game-1';
+    session.currentHandNumber = 4;
+    session.handsSinceReflection = 3;
+    session.reflectEveryNHands;
+
+    // Trigger reflection via handleStateEvent by simulating a hand change
+    const view = makeView({ handNumber: 4, isYourTurn: false });
+    session.triggerReflection(view);
+
+    // Wait for the async reflection to complete
+    await new Promise(r => setTimeout(r, 50));
+
+    // Find the reflection call (has 'reflect' in sessionKey)
+    const reflectCall = callArgs.find((a) => {
+      const p = a as Record<string, unknown>;
+      return typeof p.sessionKey === 'string' && p.sessionKey.includes('reflect');
+    }) as Record<string, unknown> | undefined;
+
+    expect(reflectCall).toBeTruthy();
+    expect(reflectCall!.model).toBe('kimi-k2.5');
+    expect(reflectCall!.provider).toBe('moonshot-intl');
+  });
+
+  it('does not pass model/provider when models config is absent', async () => {
+    const mockGw = makeMockGatewayClient();
+    const callArgs: unknown[] = [];
+    mockGw.callAgent = async (...args: unknown[]) => {
+      callArgs.push(args[0]);
+      return { payloads: [{ text: '{"action":"fold","narration":"fold"}' }] };
+    };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+      // no models config
+    });
+    session.currentHandNumber = 1;
+    session.sendDecision('test prompt', makeContext());
+    await session.lastDecision;
+
+    const params = callArgs[0] as Record<string, unknown>;
+    expect(params.model).toBeUndefined();
+    expect(params.provider).toBeUndefined();
+  });
+
+  it('handles two-part provider/model format correctly', async () => {
+    const mockGw = makeMockGatewayClient();
+    const callArgs: unknown[] = [];
+    mockGw.callAgent = async (...args: unknown[]) => {
+      callArgs.push(args[0]);
+      return { payloads: [{ text: '{"action":"call","narration":"call"}' }] };
+    };
+
+    const { session } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+      models: { decision: 'moonshot-intl/kimi-k2.5' },
+    });
+    session.currentHandNumber = 1;
+    session.sendDecision('test prompt', makeContext());
+    await session.lastDecision;
+
+    const params = callArgs[0] as Record<string, unknown>;
+    expect(params.model).toBe('kimi-k2.5');
+    expect(params.provider).toBe('moonshot-intl');
+  });
+});
+
 // ── sendDecision — action error paths ────────────────────────────────
 
 describe('GameSession — sendDecision action error paths', () => {
