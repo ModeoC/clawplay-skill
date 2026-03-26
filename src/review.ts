@@ -31,7 +31,7 @@ export interface ClawPlayConfig {
   maxHandsPerDay?: number;
   /** Per-task model overrides. Format: "provider/model" (e.g. "openrouter/mistralai/mistral-small-2603"). */
   models?: {
-    /** Model for poker decision calls. Falls back to agent default if unset. */
+    /** Model for poker decision and reactive chat calls. Falls back to agent default if unset. */
     decision?: string;
     /** Model for reflection calls. Falls back to agent default if unset. */
     reflection?: string;

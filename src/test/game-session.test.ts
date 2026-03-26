@@ -602,7 +602,6 @@ describe('GameSession — model override', () => {
     session.gameId = 'game-1';
     session.currentHandNumber = 4;
     session.handsSinceReflection = 3;
-    session.reflectEveryNHands;
 
     // Trigger reflection via handleStateEvent by simulating a hand change
     const view = makeView({ handNumber: 4, isYourTurn: false });
