@@ -662,6 +662,48 @@ describe('GameSession — model override', () => {
     expect(params.model).toBe('kimi-k2.5');
     expect(params.provider).toBe('moonshot-intl');
   });
+
+  it('retries once on empty response before counting as failure', async () => {
+    const mockGw = makeMockGatewayClient();
+    let callCount = 0;
+    mockGw.callAgent = async () => {
+      callCount++;
+      if (callCount === 1) return { payloads: [{ text: '' }] }; // empty first time
+      return { payloads: [{ text: '{"action":"fold","narration":"fold on retry"}' }] };
+    };
+
+    const { session, debugLog } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    session.currentHandNumber = 1;
+    session.sendDecision('test prompt', makeContext());
+    await session.lastDecision;
+
+    expect(callCount).toBe(2);
+    expect(debugLog.some(d => d.label === 'DECISION_RETRY')).toBe(true);
+    expect(debugLog.some(d => d.label === 'DECISION_RESPONSE')).toBe(true);
+    expect(session.consecutiveDecisionFailures).toBe(0);
+  });
+
+  it('fails after retry if second response is also empty', async () => {
+    const mockGw = makeMockGatewayClient();
+    let callCount = 0;
+    mockGw.callAgent = async () => {
+      callCount++;
+      return { payloads: [{ text: '' }] }; // empty both times
+    };
+
+    const { session, emitted } = makeSession({
+      gatewayClient: mockGw as unknown as GameSessionConfig['gatewayClient'],
+    });
+    session.currentHandNumber = 1;
+    session.sendDecision('test prompt', makeContext());
+    await session.lastDecision;
+
+    expect(callCount).toBe(2);
+    expect(session.consecutiveDecisionFailures).toBe(1);
+    expect(emitted.some(e => e.type === 'DECISION_FAILURE')).toBe(true);
+  });
 });
 
 // ── sendDecision — action error paths ────────────────────────────────

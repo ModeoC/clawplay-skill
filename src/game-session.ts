@@ -604,18 +604,26 @@ export class GameSession {
       let agentText = '';
       try {
         const sessionKey = `agent:${this.agentId}:subagent:${handSessionId(this.gameId, myHandNumber!)}`;
-        const result = await this.gatewayClient.callAgent({
+        const callParams = {
           agentId: this.agentId,
           sessionKey,
           sessionId: handSessionId(this.gameId, myHandNumber!),
           message: prompt,
-          thinking: 'low',
+          thinking: 'low' as const,
           timeout: 55,
           extraSystemPrompt: this.personalityContext || undefined,
           ...modelOverrideParams(this.models.decision),
-        }, 65_000);
+        };
 
+        const result = await this.gatewayClient.callAgent(callParams, 65_000);
         agentText = [...(result.payloads || [])].reverse().find((p: { text?: string }) => p.text)?.text || '';
+
+        // Retry once on empty response before counting as failure
+        if (!agentText && mySeq === this.decisionSeq) {
+          this.debug('DECISION_RETRY', { hand: myHandNumber, reason: 'empty_response' });
+          const retry = await this.gatewayClient.callAgent(callParams, 65_000);
+          agentText = [...(retry.payloads || [])].reverse().find((p: { text?: string }) => p.text)?.text || '';
+        }
       } catch (err) {
         if (mySeq !== this.decisionSeq) {
           this.emit({ type: 'DECISION_STALE', skipped: mySeq, current: this.decisionSeq });
