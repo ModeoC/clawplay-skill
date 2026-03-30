@@ -6,7 +6,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   buildSummary,
@@ -187,6 +187,7 @@ export class GameSession {
 
   /** Reset per-game state when transitioning back to lobby (game ended, left, or table closed). */
   resetForNewGame(): void {
+    const prevGameId = this.gameId;
     this.gameId = 'unknown';
     this.currentHandNumber = null;
     this.decisionSeq = 0;
@@ -214,6 +215,62 @@ export class GameSession {
     try { unlinkSync(join(SKILL_ROOT, 'poker-notes.txt')); } catch {}
     try { unlinkSync(join(SKILL_ROOT, 'poker-hand-notes.txt')); } catch {}
     try { unlinkSync(INSIGHTS_FILE); } catch {}
+
+    // Final sweep — remove any remaining subagent sessions from the finished game
+    this.cleanupGameSessions(prevGameId);
+  }
+
+  /** Remove subagent session entries for a specific game from OpenClaw's sessions.json. */
+  private cleanupGameSessions(gameId: string, keepCurrentHand = false): void {
+    if (!gameId || gameId === 'unknown') return;
+
+    const storePath = join(
+      process.env.HOME || '/root',
+      '.openclaw', 'agents', this.agentId, 'sessions', 'sessions.json',
+    );
+
+    try {
+      const raw = readFileSync(storePath, 'utf8');
+      const store: Record<string, unknown> = JSON.parse(raw);
+      const prefix = `agent:${this.agentId}:subagent:poker-${gameId}`;
+      const currentHandSuffix = this.currentHandNumber != null
+        ? `-h${this.currentHandNumber}`
+        : null;
+      const keysToRemove = Object.keys(store).filter(k => {
+        if (!k.startsWith(prefix)) return false;
+        // When called mid-game, preserve the current hand's session to avoid racing with in-flight decisions
+        if (keepCurrentHand && currentHandSuffix && k.endsWith(currentHandSuffix)) return false;
+        return true;
+      });
+
+      if (keysToRemove.length === 0) return;
+
+      // Collect transcript file paths from entries before deleting (gateway uses UUID filenames)
+      const transcriptPaths: string[] = [];
+      for (const key of keysToRemove) {
+        const entry = store[key] as { sessionFile?: string } | undefined;
+        if (entry?.sessionFile) transcriptPaths.push(entry.sessionFile);
+      }
+
+      for (const key of keysToRemove) delete store[key];
+
+      // Atomic write
+      const tmpPath = storePath + '.cleanup-tmp';
+      writeFileSync(tmpPath, JSON.stringify(store, null, 2), 'utf8');
+      renameSync(tmpPath, storePath);
+
+      // Remove transcript files by their actual paths
+      let transcriptsRemoved = 0;
+      for (const filePath of transcriptPaths) {
+        try { unlinkSync(filePath); transcriptsRemoved++; } catch {}
+      }
+
+      this.debug('SESSION_CLEANUP', {
+        gameId, removed: keysToRemove.length, transcriptsRemoved,
+      });
+    } catch {
+      // Cleanup failure must never crash the listener
+    }
   }
 
   /** Reset consecutive failure count (e.g. after gateway reconnects). */
@@ -381,6 +438,9 @@ export class GameSession {
           this.chatSinceReflection = [];
           this.debug('REFLECTION_RESPONSE', { hand: reflectionHandNumber, insights: parsed.insights.trim(), rawAgentText: agentText.slice(0, 500) });
           this.emit({ type: 'SESSION_INSIGHTS_UPDATED', hand: reflectionHandNumber });
+          // Clean up old hand sessions — reflection summarized them, decisions only need last 3.
+          // keepCurrentHand=true: preserve the current hand's session to avoid racing with in-flight decisions.
+          this.cleanupGameSessions(this.gameId, true);
         }
       }
     }).catch((e: unknown) => {

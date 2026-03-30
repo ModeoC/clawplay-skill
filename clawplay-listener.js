@@ -1076,7 +1076,7 @@ var GatewayWsClient = class {
 
 // game-session.ts
 import { execFile } from "node:child_process";
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, unlinkSync } from "node:fs";
+import { readFileSync as readFileSync3, writeFileSync as writeFileSync3, unlinkSync, renameSync } from "node:fs";
 import { join as join3 } from "node:path";
 
 // state-differ.ts
@@ -1419,6 +1419,7 @@ var GameSession = class _GameSession {
   // ── Game lifecycle ──────────────────────────────────────────────
   /** Reset per-game state when transitioning back to lobby (game ended, left, or table closed). */
   resetForNewGame() {
+    const prevGameId = this.gameId;
     this.gameId = "unknown";
     this.currentHandNumber = null;
     this.decisionSeq = 0;
@@ -1451,6 +1452,54 @@ var GameSession = class _GameSession {
     }
     try {
       unlinkSync(INSIGHTS_FILE);
+    } catch {
+    }
+    this.cleanupGameSessions(prevGameId);
+  }
+  /** Remove subagent session entries for a specific game from OpenClaw's sessions.json. */
+  cleanupGameSessions(gameId, keepCurrentHand = false) {
+    if (!gameId || gameId === "unknown") return;
+    const storePath = join3(
+      process.env.HOME || "/root",
+      ".openclaw",
+      "agents",
+      this.agentId,
+      "sessions",
+      "sessions.json"
+    );
+    try {
+      const raw = readFileSync3(storePath, "utf8");
+      const store = JSON.parse(raw);
+      const prefix = `agent:${this.agentId}:subagent:poker-${gameId}`;
+      const currentHandSuffix = this.currentHandNumber != null ? `-h${this.currentHandNumber}` : null;
+      const keysToRemove = Object.keys(store).filter((k) => {
+        if (!k.startsWith(prefix)) return false;
+        if (keepCurrentHand && currentHandSuffix && k.endsWith(currentHandSuffix)) return false;
+        return true;
+      });
+      if (keysToRemove.length === 0) return;
+      const transcriptPaths = [];
+      for (const key of keysToRemove) {
+        const entry = store[key];
+        if (entry?.sessionFile) transcriptPaths.push(entry.sessionFile);
+      }
+      for (const key of keysToRemove) delete store[key];
+      const tmpPath = storePath + ".cleanup-tmp";
+      writeFileSync3(tmpPath, JSON.stringify(store, null, 2), "utf8");
+      renameSync(tmpPath, storePath);
+      let transcriptsRemoved = 0;
+      for (const filePath of transcriptPaths) {
+        try {
+          unlinkSync(filePath);
+          transcriptsRemoved++;
+        } catch {
+        }
+      }
+      this.debug("SESSION_CLEANUP", {
+        gameId,
+        removed: keysToRemove.length,
+        transcriptsRemoved
+      });
     } catch {
     }
   }
@@ -1589,6 +1638,7 @@ var GameSession = class _GameSession {
           this.chatSinceReflection = [];
           this.debug("REFLECTION_RESPONSE", { hand: reflectionHandNumber, insights: parsed.insights.trim(), rawAgentText: agentText.slice(0, 500) });
           this.emit({ type: "SESSION_INSIGHTS_UPDATED", hand: reflectionHandNumber });
+          this.cleanupGameSessions(this.gameId, true);
         }
       }
     }).catch((e) => {

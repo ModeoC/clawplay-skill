@@ -2256,3 +2256,104 @@ describe('GameSession — sendReaction via DRAMA_MOMENT', () => {
     expect(session.reactionInFlight).toBe(false);
   });
 });
+
+describe('GameSession — cleanupGameSessions', () => {
+  let tmpHome: string;
+  let sessionsDir: string;
+  let sessionsFile: string;
+  const origHome = process.env.HOME;
+
+  beforeEach(async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-test-'));
+    sessionsDir = path.join(tmpHome, '.openclaw', 'agents', 'main', 'sessions');
+    sessionsFile = path.join(sessionsDir, 'sessions.json');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    process.env.HOME = tmpHome;
+  });
+
+  afterEach(async () => {
+    process.env.HOME = origHome;
+    const fs = await import('node:fs');
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch {}
+  });
+
+  it('removes matching session keys and transcript files on resetForNewGame', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const transcript1 = path.join(sessionsDir, 'aaaa-1111.jsonl');
+    const transcript2 = path.join(sessionsDir, 'bbbb-2222.jsonl');
+    const unrelatedTranscript = path.join(sessionsDir, 'cccc-3333.jsonl');
+    const store: Record<string, unknown> = {
+      'agent:main:subagent:poker-game123-h1': { sessionFile: transcript1 },
+      'agent:main:subagent:poker-game123-h2': { sessionFile: transcript2 },
+      'agent:main:subagent:poker-game123-reflect': { data: 3 },
+      'agent:main:subagent:poker-warmup': { data: 4 },
+      'agent:main:main': { sessionFile: unrelatedTranscript },
+    };
+    fs.writeFileSync(sessionsFile, JSON.stringify(store));
+    fs.writeFileSync(transcript1, '{}');
+    fs.writeFileSync(transcript2, '{}');
+    fs.writeFileSync(unrelatedTranscript, '{}');
+
+    const { session, debugLog } = makeSession();
+    session.gameId = 'game123';
+    session.resetForNewGame();
+
+    const result = JSON.parse(fs.readFileSync(sessionsFile, 'utf8'));
+    expect(Object.keys(result).sort()).toEqual([
+      'agent:main:main',
+      'agent:main:subagent:poker-warmup',
+    ]);
+
+    // Transcript files for removed entries should be deleted; unrelated one kept
+    expect(fs.existsSync(transcript1)).toBe(false);
+    expect(fs.existsSync(transcript2)).toBe(false);
+    expect(fs.existsSync(unrelatedTranscript)).toBe(true);
+
+    const cleanupEvent = debugLog.find(d => d.label === 'SESSION_CLEANUP');
+    expect(cleanupEvent).toBeDefined();
+    expect(cleanupEvent!.data.gameId).toBe('game123');
+    expect(cleanupEvent!.data.removed).toBe(3);
+    expect(cleanupEvent!.data.transcriptsRemoved).toBe(2);
+  });
+
+  it('is a no-op when gameId is unknown', async () => {
+    const fs = await import('node:fs');
+    const { session } = makeSession();
+    session.gameId = 'unknown';
+    session.resetForNewGame();
+
+    expect(() => fs.readFileSync(sessionsFile)).toThrow();
+  });
+
+  it('does not throw when sessions.json is missing', () => {
+    const { session } = makeSession();
+    session.gameId = 'game456';
+    expect(() => session.resetForNewGame()).not.toThrow();
+  });
+
+  it('does not throw when sessions.json contains invalid JSON', async () => {
+    const fs = await import('node:fs');
+    fs.writeFileSync(sessionsFile, 'not valid json');
+
+    const { session } = makeSession();
+    session.gameId = 'game789';
+    expect(() => session.resetForNewGame()).not.toThrow();
+  });
+
+  it('skips write when no matching keys exist', async () => {
+    const fs = await import('node:fs');
+    const store = { 'agent:main:main': { data: 1 } };
+    fs.writeFileSync(sessionsFile, JSON.stringify(store));
+
+    const { session } = makeSession();
+    session.gameId = 'no-match';
+    session.resetForNewGame();
+
+    const result = JSON.parse(fs.readFileSync(sessionsFile, 'utf8'));
+    expect(result).toEqual(store);
+  });
+});
